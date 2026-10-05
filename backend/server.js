@@ -277,13 +277,13 @@ function startSimulator() {
     } else if (msg.type === 'client_billing') {
       const { clientName, status, billed, measurement } = msg;
       const isHttpSuccess = (status === 200 || status === 204);
-      const isActuallyBilled = Boolean(billed && isHttpSuccess);
+      const isActuallyBilled = Boolean((billed || measurement === 'measured' || measurement === 'accepted') && isHttpSuccess);
       const statusStr = isActuallyBilled 
         ? 'Billed (Confirmed)'
         : (isHttpSuccess ? 'Measured (Accepted)' : `Billing Error (${status})`);
       const instanceName = process.env.INSTANCE_NAME || 'default';
       
-      updateClientBilling(clientName, instanceName, statusStr, isActuallyBilled, 0).catch(err => {
+      updateClientBilling(clientName, instanceName, statusStr, isActuallyBilled, 0.0001).catch(err => {
         console.error("SYSTEM: Error updating client billing in DB:", err.message);
       });
 

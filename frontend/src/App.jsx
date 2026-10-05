@@ -13,7 +13,7 @@ const MuiLineChart = lazy(() =>
 const DEFAULT_INSTANCES = [
   typeof window !== 'undefined' && window.location.hostname === 'localhost'
     ? 'http://localhost:3001'
-    : 'https://kickbacks-backend-yj6t.onrender.com'
+    : 'https://kickbacks-backend-slf4.onrender.com'
 ];
 
 const TABS = [

@@ -405,11 +405,30 @@ loadConfig().then(() => {
   });
 });
 
-// Health/Status API Check at root
-app.get('/', (req, res) => {
+const frontendDist = path.join(__dirname, '../frontend/dist');
+const hasFrontendDist = fs.existsSync(path.join(frontendDist, 'index.html'));
+
+if (hasFrontendDist) {
+  app.use(express.static(frontendDist));
+}
+
+// Health/Status API Check
+app.get('/api/health', (req, res) => {
   res.json({
     status: "online",
-    message: "Kickbacks Simulator Backend API is running. Central dashboard is hosted on Vercel.",
+    message: "Kickbacks Simulator Backend API is running.",
+    instanceName: process.env.INSTANCE_NAME || 'default',
+    running: simulatorProcess !== null
+  });
+});
+
+app.get('/', (req, res) => {
+  if (hasFrontendDist) {
+    return res.sendFile(path.join(frontendDist, 'index.html'));
+  }
+  res.json({
+    status: "online",
+    message: "Kickbacks Simulator Backend API is running.",
     instanceName: process.env.INSTANCE_NAME || 'default',
     running: simulatorProcess !== null
   });
@@ -735,7 +754,10 @@ app.post('/api/auth/add-account', checkAuth, async (req, res) => {
       name: accountName,
       clientId,
       refreshToken: cleanToken,
-      scale: parseInt(scale, 10) || 10
+      scale: parseInt(scale, 10) || 10,
+      minPromptWait: parseInt(req.body.minPromptWait, 10) || 8,
+      maxPromptWait: parseInt(req.body.maxPromptWait, 10) || 15,
+      sessionDuration: parseInt(req.body.sessionDuration, 10) || 60
     };
 
     if (existingIdx >= 0) {
@@ -751,6 +773,79 @@ app.post('/api/auth/add-account', checkAuth, async (req, res) => {
     setTimeout(() => startSimulator(), 1000);
 
     res.json({ success: true, account: newAccount, totalAccounts: currentConfig.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/auth/account/:accountName/settings', checkAuth, async (req, res) => {
+  try {
+    const { accountName } = req.params;
+    const { scale, minPromptWait, maxPromptWait, sessionDuration } = req.body;
+    const { saveConfig } = require('./db');
+    const currentConfig = await loadConfig();
+    const accIdx = currentConfig.findIndex(c => c.name === accountName);
+    if (accIdx < 0) {
+      return res.status(404).json({ error: `Account '${accountName}' not found` });
+    }
+
+    if (scale !== undefined) {
+      const parsedScale = parseInt(scale, 10);
+      if (!isNaN(parsedScale) && parsedScale > 0) {
+        currentConfig[accIdx].scale = parsedScale;
+      }
+    }
+    if (minPromptWait !== undefined) {
+      const parsedMin = parseInt(minPromptWait, 10);
+      if (!isNaN(parsedMin) && parsedMin >= 1) {
+        currentConfig[accIdx].minPromptWait = parsedMin;
+      }
+    }
+    if (maxPromptWait !== undefined) {
+      const parsedMax = parseInt(maxPromptWait, 10);
+      if (!isNaN(parsedMax) && parsedMax >= 1) {
+        currentConfig[accIdx].maxPromptWait = parsedMax;
+      }
+    }
+    if (sessionDuration !== undefined) {
+      const parsedDuration = parseInt(sessionDuration, 10);
+      if (!isNaN(parsedDuration) && parsedDuration >= 10) {
+        currentConfig[accIdx].sessionDuration = parsedDuration;
+      }
+    }
+
+    await saveConfig(currentConfig);
+
+    appendLog(`SYSTEM: Settings updated for account '${accountName}' (scale: ${currentConfig[accIdx].scale}, wait: ${currentConfig[accIdx].minPromptWait || 8}-${currentConfig[accIdx].maxPromptWait || 15}s, session: ${currentConfig[accIdx].sessionDuration || 60}s). Restarting fleet...`);
+    stopSimulator();
+    setTimeout(() => startSimulator(), 1000);
+
+    res.json({ success: true, account: currentConfig[accIdx] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/auth/fleet-settings', checkAuth, async (req, res) => {
+  try {
+    const { scale, minPromptWait, maxPromptWait, sessionDuration } = req.body;
+    const { saveConfig } = require('./db');
+    const currentConfig = await loadConfig();
+
+    currentConfig.forEach(acc => {
+      if (scale !== undefined && parseInt(scale, 10) > 0) acc.scale = parseInt(scale, 10);
+      if (minPromptWait !== undefined && parseInt(minPromptWait, 10) >= 1) acc.minPromptWait = parseInt(minPromptWait, 10);
+      if (maxPromptWait !== undefined && parseInt(maxPromptWait, 10) >= 1) acc.maxPromptWait = parseInt(maxPromptWait, 10);
+      if (sessionDuration !== undefined && parseInt(sessionDuration, 10) >= 10) acc.sessionDuration = parseInt(sessionDuration, 10);
+    });
+
+    await saveConfig(currentConfig);
+
+    appendLog(`SYSTEM: Fleet-wide settings updated across all ${currentConfig.length} accounts. Restarting fleet...`);
+    stopSimulator();
+    setTimeout(() => startSimulator(), 1000);
+
+    res.json({ success: true, config: currentConfig });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -811,6 +906,16 @@ function gracefulShutdown(signal) {
 
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+
+// Fallback for SPA routing
+if (hasFrontendDist) {
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api') || req.path.startsWith('/docs') || req.path.startsWith('/dos')) {
+      return next();
+    }
+    res.sendFile(path.join(frontendDist, 'index.html'));
+  });
+}
 
 app.listen(PORT, async () => {
   console.log(`\n🚀 Kickbacks Simulator Backend is live at http://localhost:${PORT}\n`);

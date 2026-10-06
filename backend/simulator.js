@@ -493,8 +493,12 @@ class TokenManager {
   }
 }
 
-async function runVirtualClient(name, clientId, authManager) {
-  console.log(`[${name}] Initializing client (clientId: ${clientId})...`);
+async function runVirtualClient(name, clientId, authManager, profile = {}) {
+  const minPromptWait = Math.max(1, parseInt(profile.minPromptWait, 10) || 8);
+  const maxPromptWait = Math.max(minPromptWait, parseInt(profile.maxPromptWait, 10) || 15);
+  const sessionDuration = Math.max(15, parseInt(profile.sessionDuration, 10) || 60);
+
+  console.log(`[${name}] Initializing client (clientId: ${clientId}, wait: ${minPromptWait}-${maxPromptWait}s, session: ${sessionDuration}s)...`);
   
   let activeAd = null;
   let viewTickTimer = null;
@@ -604,7 +608,8 @@ async function runVirtualClient(name, clientId, authManager) {
               selected._serveSurface = serveSurface;
               if (selected.campaign_id) lastCampaignId = selected.campaign_id;
               const serverRotation = (body.rotation_seconds || 30) * 1000;
-              const rotationIntervalMs = Math.max(60000, serverRotation * 2 + Math.floor(Math.random() * 30000));
+              const baseSessionMs = sessionDuration * 1000;
+              const rotationIntervalMs = Math.max(baseSessionMs, serverRotation * 2 + Math.floor(Math.random() * 15000));
               console.log(`[${name}] ✅ Got PAID commercial ad from ${serveSurface}: "${selected.title_text}" (rotation: ${rotationIntervalMs/1000}s)`);
               return {
                 ad: selected,
@@ -621,7 +626,8 @@ async function runVirtualClient(name, clientId, authManager) {
                 fallbackCandidateAd = candidate;
                 fallbackSurface = serveSurface;
                 const serverRotation = (body.rotation_seconds || 30) * 1000;
-                fallbackRotation = Math.max(60000, serverRotation * 2 + Math.floor(Math.random() * 30000));
+                const baseSessionMs = sessionDuration * 1000;
+                fallbackRotation = Math.max(baseSessionMs, serverRotation * 2 + Math.floor(Math.random() * 15000));
               }
               // If we already have a candidate ad from statusline, check at most 1 other surface for paid ads
               if (fallbackCandidateAd && (serveSurface === 'overlay' || serveSurface === 'claude-code')) {
@@ -677,7 +683,8 @@ async function runVirtualClient(name, clientId, authManager) {
           selected.title_text = selected.ad_line || selected.brand || selected.title_text || "Sponsored Ad";
           selected._serveSurface = 'statusline';
           if (selected.campaign_id) lastCampaignId = selected.campaign_id;
-          const rotationIntervalMs = body.rotation_interval_seconds ? (body.rotation_interval_seconds * 1000) : 60000;
+          const baseSessionMs = sessionDuration * 1000;
+          const rotationIntervalMs = Math.max(baseSessionMs, body.rotation_interval_seconds ? (body.rotation_interval_seconds * 1000) : 60000);
           const viewThresholdMs = body.view_threshold_seconds ? (body.view_threshold_seconds * 1000) : 10000;
           const tickIntervalMs = body.view_tick_interval_seconds ? (body.view_tick_interval_seconds * 1000) : 10000;
           
@@ -934,10 +941,10 @@ async function runVirtualClient(name, clientId, authManager) {
     rotationTimer = setTimeout(() => {
       console.log(`[${name}] Session rotation after ${rotationIntervalMs/1000}s. Total ticks: ${tickCount}, visible: ${accruedVisibleMs}ms`);
       endShow();
-      // Natural pause between sessions (8 - 15s) simulating human prompt cycle
-      const humanPauseMs = 8000 + Math.floor(Math.random() * 7000);
+      // Natural pause between sessions simulating human prompt cycle
+      const humanPauseMs = Math.floor(minPromptWait * 1000 + Math.random() * ((maxPromptWait - minPromptWait) * 1000));
       let pauseSecRemaining = Math.round(humanPauseMs / 1000);
-      console.log(`[${name}] Next ad rotation in ${pauseSecRemaining}s...`);
+      console.log(`[${name}] Next ad rotation in ${pauseSecRemaining}s (configured pause: ${minPromptWait}-${maxPromptWait}s)...`);
       if (process.send) {
         process.send({
           type: 'client_tick',
@@ -1308,7 +1315,7 @@ async function start() {
       // Stagger clients by 3.5s so multiple clients don't hit the exact same tick second
       const startDelay = (c - startIdx) * 3500;
       setTimeout(() => {
-        runVirtualClient(virtualName, virtualClientId, authManager).catch(err => {
+        runVirtualClient(virtualName, virtualClientId, authManager, p).catch(err => {
           console.error(`Fatal error in virtual client ${virtualName}:`, err);
         });
       }, startDelay);

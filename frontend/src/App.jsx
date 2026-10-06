@@ -4,7 +4,7 @@ import {
   Settings, LineChart as LineChartIcon, RefreshCw, LogOut, Plus, Trash2,
   Play, Square, AlertCircle, Ban, Server, Compass, Sparkles,
   TrendingUp, Zap, Target, ShieldCheck, Gauge, BarChart3, Clock, DollarSign,
-  UserPlus, ExternalLink, CheckCircle2, X, Key, Globe
+  UserPlus, ExternalLink, CheckCircle2, X, Key, Globe, SlidersHorizontal, Timer
 } from 'lucide-react';
 
 const MuiLineChart = lazy(() =>
@@ -14,7 +14,7 @@ const MuiLineChart = lazy(() =>
 const DEFAULT_INSTANCES = [
   typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
     ? 'http://localhost:3001'
-    : 'https://kickbacks-backend-slf4.onrender.com'
+    : 'https://kickbacks-backend-nbah.onrender.com'
 ];
 
 const TABS = [
@@ -89,7 +89,9 @@ export default function App() {
         });
       } else {
         names.forEach((accName, accIndex) => {
-          const profile = runtimeProfs.find(p => p.name === accName) || configProfs.find(p => p.name === accName) || null;
+          const cfg = configProfs.find(p => p.name === accName) || {};
+          const rt = runtimeProfs.find(p => p.name === accName) || {};
+          const profile = { ...cfg, ...rt };
           const clients = (s.clients || []).filter(c => 
             c.name.startsWith(accName) || 
             (names.length === 1 && !c.name.includes('account_'))
@@ -100,6 +102,11 @@ export default function App() {
             name: accName,
             accIndex,
             profile,
+            config: cfg,
+            scale: cfg.scale || 10,
+            minPromptWait: cfg.minPromptWait || 8,
+            maxPromptWait: cfg.maxPromptWait || 15,
+            sessionDuration: cfg.sessionDuration || 60,
             clients,
             isOnline: s.online,
             isRunning: s.running
@@ -120,9 +127,24 @@ export default function App() {
   const [manualAccountName, setManualAccountName] = useState('');
   const [manualRefreshToken, setManualRefreshToken] = useState('');
   const [manualScale, setManualScale] = useState(10);
+  const [manualMinWait, setManualMinWait] = useState(8);
+  const [manualMaxWait, setManualMaxWait] = useState(15);
+  const [manualSessionDuration, setManualSessionDuration] = useState(60);
   const [manualSaving, setManualSaving] = useState(false);
   const [manualErrorMsg, setManualErrorMsg] = useState('');
   const [manualSuccessMsg, setManualSuccessMsg] = useState('');
+
+  // Manage Account / Clients Timing Modal State
+  const [accountToManage, setAccountToManage] = useState(null);
+  const [manageScale, setManageScale] = useState(10);
+  const [manageMinWait, setManageMinWait] = useState(8);
+  const [manageMaxWait, setManageMaxWait] = useState(15);
+  const [manageSessionDuration, setManageSessionDuration] = useState(60);
+  const [manageApplyAll, setManageApplyAll] = useState(false);
+  const [manageSaving, setManageSaving] = useState(false);
+  const [manageSuccessMsg, setManageSuccessMsg] = useState('');
+  const [manageErrorMsg, setManageErrorMsg] = useState('');
+  const [fleetPresetLoading, setFleetPresetLoading] = useState(false);
 
   const getCachedMetrics = useCallback(() => {
     const saved = localStorage.getItem('kickbacks_cached_metrics');
@@ -526,7 +548,10 @@ export default function App() {
         body: JSON.stringify({
           name: manualAccountName.trim(),
           refreshToken: manualRefreshToken.trim(),
-          scale: parseInt(manualScale, 10) || 10
+          scale: parseInt(manualScale, 10) || 10,
+          minPromptWait: parseInt(manualMinWait, 10) || 8,
+          maxPromptWait: parseInt(manualMaxWait, 10) || 15,
+          sessionDuration: parseInt(manualSessionDuration, 10) || 60
         })
       });
       const data = await res.json();
@@ -542,6 +567,98 @@ export default function App() {
       setManualErrorMsg(err.message);
     } finally {
       setManualSaving(false);
+    }
+  };
+
+  // Open Manage Account Modal
+  const handleOpenManageAccount = (acc) => {
+    setAccountToManage(acc);
+    setManageScale(acc.scale || acc.config?.scale || acc.profile?.scale || 10);
+    setManageMinWait(acc.minPromptWait || acc.config?.minPromptWait || acc.profile?.minPromptWait || 8);
+    setManageMaxWait(acc.maxPromptWait || acc.config?.maxPromptWait || acc.profile?.maxPromptWait || 15);
+    setManageSessionDuration(acc.sessionDuration || acc.config?.sessionDuration || acc.profile?.sessionDuration || 60);
+    setManageApplyAll(false);
+    setManageSuccessMsg('');
+    setManageErrorMsg('');
+  };
+
+  // Save Account Settings (Single or Fleet-wide)
+  const handleSaveAccountSettings = async (e) => {
+    e.preventDefault();
+    if (!accountToManage) return;
+    setManageSaving(true);
+    setManageErrorMsg('');
+    setManageSuccessMsg('');
+
+    const targetUrl = accountToManage.url || instances.find(u => statuses[u]?.online) || instances[0] || 'http://localhost:3001';
+    const payload = {
+      scale: Math.max(1, parseInt(manageScale, 10) || 10),
+      minPromptWait: Math.max(1, parseInt(manageMinWait, 10) || 8),
+      maxPromptWait: Math.max(1, parseInt(manageMaxWait, 10) || 15),
+      sessionDuration: Math.max(10, parseInt(manageSessionDuration, 10) || 60)
+    };
+
+    if (payload.maxPromptWait < payload.minPromptWait) {
+      payload.maxPromptWait = payload.minPromptWait;
+    }
+
+    try {
+      if (manageApplyAll) {
+        const res = await fetch(`${targetUrl}/api/auth/fleet-settings`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${password}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed to update fleet settings');
+        setManageSuccessMsg(`Updated all fleet accounts! Running with ${payload.scale} clients per account.`);
+      } else {
+        const res = await fetch(`${targetUrl}/api/auth/account/${encodeURIComponent(accountToManage.name)}/settings`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${password}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed to update account settings');
+        setManageSuccessMsg(`Settings saved for '${accountToManage.name}'! Running with ${payload.scale} clients.`);
+      }
+      setRefreshTrigger(prev => prev + 1);
+      setTimeout(() => {
+        setAccountToManage(null);
+      }, 1200);
+    } catch (err) {
+      setManageErrorMsg(err.message);
+    } finally {
+      setManageSaving(false);
+    }
+  };
+
+  // Apply Quick Fleet-Wide Preset
+  const handleApplyFleetPreset = async (preset) => {
+    setFleetPresetLoading(true);
+    const targetUrl = instances.find(u => statuses[u]?.online) || instances[0] || 'http://localhost:3001';
+    try {
+      const res = await fetch(`${targetUrl}/api/auth/fleet-settings`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${password}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(preset)
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to apply fleet preset');
+      setRefreshTrigger(prev => prev + 1);
+    } catch (err) {
+      alert(`Error applying fleet preset: ${err.message}`);
+    } finally {
+      setFleetPresetLoading(false);
     }
   };
 
@@ -1087,13 +1204,22 @@ export default function App() {
                       flexWrap: 'wrap',
                       gap: '12px'
                     }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                         <span className="chip purple" style={{ fontSize: '11px', fontWeight: 600, padding: '3px 8px' }}>
                           Account #{idx + 1}
                         </span>
                         <span style={{ fontSize: '15px', fontWeight: 700, color: 'var(--ink)' }}>{accountName}</span>
                         <span className={`chip ${isOnline ? (isRunning ? 'green' : 'neutral') : 'neutral'}`} style={{ fontSize: '10px', padding: '2px 8px' }}>
                           {isOnline ? (isRunning ? 'Running' : 'Idle') : 'Offline'}
+                        </span>
+                        <span className="chip purple" style={{ fontSize: '10px', padding: '2px 8px' }}>
+                          {acc.scale || clients.length || 10} Clients
+                        </span>
+                        <span className="chip cyan" style={{ fontSize: '10px', padding: '2px 8px' }}>
+                          <Timer size={10} /> {acc.minPromptWait || 8}–{acc.maxPromptWait || 15}s wait
+                        </span>
+                        <span className="chip neutral" style={{ fontSize: '10px', padding: '2px 8px' }}>
+                          {acc.sessionDuration || 60}s session
                         </span>
                         <span style={{ fontSize: '11px', color: 'var(--steel)', fontFamily: 'var(--font-code)' }}>{url}</span>
                       </div>
@@ -1117,6 +1243,15 @@ export default function App() {
                               <Square size={9} fill="currentColor" /> Stop Fleet
                             </button>
                           )}
+                          <button
+                            type="button"
+                            className="btn-card-action"
+                            title={`Configure clients & timings for ${accountName}`}
+                            onClick={() => handleOpenManageAccount(acc)}
+                            style={{ padding: '4px 10px', fontSize: '11px', display: 'flex', alignItems: 'center', gap: '4px', borderColor: 'rgba(124, 58, 237, 0.35)', color: 'var(--accent-purple)' }}
+                          >
+                            <SlidersHorizontal size={10} /> Configure
+                          </button>
                           <button
                             className="btn-card-action stop"
                             title={`Remove account ${accountName}`}
@@ -1550,8 +1685,70 @@ export default function App() {
                 </button>
               </div>
               <p className="panel-description">
-                Active Kickbacks accounts running in the simulation fleet. Each account runs with parallel virtual clients.
+                Active Kickbacks accounts running in the simulation fleet. Configure client concurrency and humanized prompt wait times per account.
               </p>
+
+              {/* Fleet-Wide Quick Presets */}
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                flexWrap: 'wrap',
+                gap: '10px',
+                padding: '12px 16px',
+                backgroundColor: 'var(--surface-soft)',
+                borderRadius: 'var(--rounded-md)',
+                border: '1px solid var(--hairline)',
+                marginBottom: '16px'
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <Zap size={14} style={{ color: 'var(--brand-purple)' }} />
+                  <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--ink)' }}>
+                    Fleet-Wide Presets:
+                  </span>
+                  <span style={{ fontSize: '11px', color: 'var(--steel)' }}>
+                    Quickly calibrate client concurrency & typing pauses across all accounts
+                  </span>
+                </div>
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    className="preset-chip-btn"
+                    disabled={fleetPresetLoading}
+                    onClick={() => handleApplyFleetPreset({ scale: 5, minPromptWait: 15, maxPromptWait: 30, sessionDuration: 90 })}
+                    title="5 clients/account, 15-30s pause, 90s session"
+                  >
+                    🛡️ Conservative (5 cl)
+                  </button>
+                  <button
+                    type="button"
+                    className="preset-chip-btn"
+                    disabled={fleetPresetLoading}
+                    onClick={() => handleApplyFleetPreset({ scale: 10, minPromptWait: 8, maxPromptWait: 15, sessionDuration: 60 })}
+                    title="10 clients/account, 8-15s pause, 60s session"
+                  >
+                    ⚖️ Balanced (10 cl)
+                  </button>
+                  <button
+                    type="button"
+                    className="preset-chip-btn"
+                    disabled={fleetPresetLoading}
+                    onClick={() => handleApplyFleetPreset({ scale: 20, minPromptWait: 5, maxPromptWait: 10, sessionDuration: 45 })}
+                    title="20 clients/account, 5-10s pause, 45s session"
+                  >
+                    ⚡ Turbo (20 cl)
+                  </button>
+                  <button
+                    type="button"
+                    className="preset-chip-btn"
+                    disabled={fleetPresetLoading}
+                    onClick={() => handleApplyFleetPreset({ scale: 50, minPromptWait: 3, maxPromptWait: 8, sessionDuration: 30 })}
+                    title="50 clients/account, 3-8s pause, 30s session"
+                  >
+                    🚀 Max Load (50 cl)
+                  </button>
+                </div>
+              </div>
 
               <div style={{ overflowX: 'auto', marginBottom: '24px' }}>
                 <table className="account-table">
@@ -1559,8 +1756,10 @@ export default function App() {
                     <tr>
                       <th>Account Name</th>
                       <th>Client ID</th>
-                      <th>Scale</th>
-                      <th>Action</th>
+                      <th>Clients Scale</th>
+                      <th>Random Prompt Wait</th>
+                      <th>Session Max</th>
+                      <th style={{ textAlign: 'right' }}>Actions</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1572,17 +1771,42 @@ export default function App() {
                             <tr key={acc.name || acc.clientId}>
                               <td style={{ fontWeight: 600 }}>{acc.name}</td>
                               <td style={{ fontFamily: 'var(--font-code)', fontSize: '12px', color: 'var(--steel)' }}>{acc.clientId || 'N/A'}</td>
-                              <td><span className="chip purple" style={{ fontSize: '11px', padding: '2px 8px' }}>{acc.scale || 10} clients</span></td>
                               <td>
-                                <button
-                                  type="button"
-                                  className="icon-button danger ghost"
-                                  onClick={() => handleDeleteAccount(acc.name)}
-                                  title="Remove account"
-                                  aria-label={`Remove ${acc.name}`}
-                                >
-                                  <Trash2 size={13} />
-                                </button>
+                                <span className="chip purple" style={{ fontSize: '11px', padding: '2px 8px' }}>
+                                  {acc.scale || 10} clients
+                                </span>
+                              </td>
+                              <td>
+                                <span className="chip cyan" style={{ fontSize: '11px', padding: '2px 8px' }}>
+                                  <Timer size={10} /> {acc.minPromptWait || 8}s – {acc.maxPromptWait || 15}s
+                                </span>
+                              </td>
+                              <td>
+                                <span className="chip neutral" style={{ fontSize: '11px', padding: '2px 8px' }}>
+                                  {acc.sessionDuration || 60}s
+                                </span>
+                              </td>
+                              <td style={{ textAlign: 'right' }}>
+                                <div style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
+                                  <button
+                                    type="button"
+                                    className="btn-card-action"
+                                    onClick={() => handleOpenManageAccount(acc)}
+                                    title={`Manage clients and timings for ${acc.name}`}
+                                    style={{ padding: '3px 10px', fontSize: '11px', display: 'inline-flex', alignItems: 'center', gap: '4px', borderColor: 'rgba(124, 58, 237, 0.35)', color: 'var(--accent-purple)' }}
+                                  >
+                                    <SlidersHorizontal size={11} /> Manage
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="icon-button danger ghost"
+                                    onClick={() => handleDeleteAccount(acc.name)}
+                                    title="Remove account"
+                                    aria-label={`Remove ${acc.name}`}
+                                  >
+                                    <Trash2 size={13} />
+                                  </button>
+                                </div>
                               </td>
                             </tr>
                           ));
@@ -1590,7 +1814,7 @@ export default function App() {
                       } catch (_) {}
                       return (
                         <tr>
-                          <td colSpan={4} style={{ textAlign: 'center', padding: '16px', color: 'var(--steel)' }}>
+                          <td colSpan={6} style={{ textAlign: 'center', padding: '16px', color: 'var(--steel)' }}>
                             No accounts configured. Click "+ Connect Account" to log in or add one!
                           </td>
                         </tr>
@@ -1892,7 +2116,7 @@ export default function App() {
                     />
                   </div>
 
-                  <div className="form-group" style={{ marginBottom: '20px' }}>
+                  <div className="form-group" style={{ marginBottom: '14px' }}>
                     <label htmlFor="manualScale">Virtual Clients Scale</label>
                     <input
                       id="manualScale"
@@ -1907,6 +2131,51 @@ export default function App() {
                     <span style={{ fontSize: '11px', color: 'var(--steel)', marginTop: '4px', display: 'block' }}>
                       Number of simulated concurrent clients for this account (recommended: 5–10).
                     </span>
+                  </div>
+
+                  <div className="form-group" style={{ marginBottom: '14px' }}>
+                    <label style={{ fontWeight: 600, marginBottom: '4px', display: 'block' }}>
+                      Random Prompt Wait Time (Typing Pause)
+                    </label>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                      <div>
+                        <label htmlFor="manualMinWait" style={{ fontSize: '11px', color: 'var(--steel)', marginBottom: '2px', display: 'block' }}>Min Wait (s)</label>
+                        <input
+                          id="manualMinWait"
+                          type="number"
+                          min="1"
+                          max="120"
+                          className="form-input"
+                          value={manualMinWait}
+                          onChange={e => setManualMinWait(e.target.value)}
+                        />
+                      </div>
+                      <div>
+                        <label htmlFor="manualMaxWait" style={{ fontSize: '11px', color: 'var(--steel)', marginBottom: '2px', display: 'block' }}>Max Wait (s)</label>
+                        <input
+                          id="manualMaxWait"
+                          type="number"
+                          min="1"
+                          max="180"
+                          className="form-input"
+                          value={manualMaxWait}
+                          onChange={e => setManualMaxWait(e.target.value)}
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="form-group" style={{ marginBottom: '20px' }}>
+                    <label htmlFor="manualSessionDuration">Session Duration / Max Time (seconds)</label>
+                    <input
+                      id="manualSessionDuration"
+                      type="number"
+                      min="15"
+                      max="600"
+                      className="form-input"
+                      value={manualSessionDuration}
+                      onChange={e => setManualSessionDuration(e.target.value)}
+                    />
                   </div>
 
                   {manualErrorMsg && (
@@ -1935,6 +2204,260 @@ export default function App() {
                   </button>
                 </form>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Manage Account Concurrency & Timing Modal */}
+      {accountToManage && (
+        <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget && !manageSaving) setAccountToManage(null); }}>
+          <div className="modal-dialog" style={{ maxWidth: 540 }}>
+            <div className="modal-header">
+              <div>
+                <h2>Manage Clients & Timing</h2>
+                <p>Configure concurrency & humanized rhythm for <strong>{accountToManage.name}</strong></p>
+              </div>
+              <button
+                type="button"
+                className="icon-button ghost"
+                disabled={manageSaving}
+                onClick={() => setAccountToManage(null)}
+                aria-label="Close modal"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="modal-body">
+              {/* Presets Header Bar */}
+              <div style={{ marginBottom: '18px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+                  <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--ink)' }}>
+                    Quick Presets
+                  </span>
+                  <span style={{ fontSize: '11px', color: 'var(--steel)' }}>
+                    Auto-fill settings below
+                  </span>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '6px' }}>
+                  <button
+                    type="button"
+                    className="preset-chip-btn"
+                    style={{ justifyContent: 'center', fontSize: '11px', padding: '6px 4px' }}
+                    onClick={() => {
+                      setManageScale(5);
+                      setManageMinWait(15);
+                      setManageMaxWait(30);
+                      setManageSessionDuration(90);
+                    }}
+                  >
+                    🛡️ Safe (5)
+                  </button>
+                  <button
+                    type="button"
+                    className="preset-chip-btn"
+                    style={{ justifyContent: 'center', fontSize: '11px', padding: '6px 4px' }}
+                    onClick={() => {
+                      setManageScale(10);
+                      setManageMinWait(8);
+                      setManageMaxWait(15);
+                      setManageSessionDuration(60);
+                    }}
+                  >
+                    ⚖️ Balanced (10)
+                  </button>
+                  <button
+                    type="button"
+                    className="preset-chip-btn"
+                    style={{ justifyContent: 'center', fontSize: '11px', padding: '6px 4px' }}
+                    onClick={() => {
+                      setManageScale(25);
+                      setManageMinWait(5);
+                      setManageMaxWait(10);
+                      setManageSessionDuration(45);
+                    }}
+                  >
+                    ⚡ Turbo (25)
+                  </button>
+                  <button
+                    type="button"
+                    className="preset-chip-btn"
+                    style={{ justifyContent: 'center', fontSize: '11px', padding: '6px 4px' }}
+                    onClick={() => {
+                      setManageScale(50);
+                      setManageMinWait(3);
+                      setManageMaxWait(8);
+                      setManageSessionDuration(30);
+                    }}
+                  >
+                    🚀 Max (50)
+                  </button>
+                </div>
+              </div>
+
+              <form onSubmit={handleSaveAccountSettings}>
+                {/* Scale Input */}
+                <div className="form-group" style={{ marginBottom: '16px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                    <label htmlFor="manageScaleInput" style={{ margin: 0, fontWeight: 700 }}>
+                      Virtual Clients Concurrency
+                    </label>
+                    <span className="chip purple" style={{ fontSize: '12px', padding: '2px 8px' }}>
+                      {manageScale} Active Clients
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                    <input
+                      type="range"
+                      min="1"
+                      max="50"
+                      value={manageScale}
+                      onChange={e => setManageScale(parseInt(e.target.value, 10))}
+                      style={{ flex: 1, accentColor: 'var(--accent-purple)', cursor: 'pointer' }}
+                    />
+                    <input
+                      id="manageScaleInput"
+                      type="number"
+                      min="1"
+                      max="50"
+                      className="form-input"
+                      style={{ width: '70px', textAlign: 'center' }}
+                      value={manageScale}
+                      onChange={e => setManageScale(Math.max(1, Math.min(50, parseInt(e.target.value, 10) || 1)))}
+                      required
+                    />
+                  </div>
+                  <span style={{ fontSize: '11px', color: 'var(--steel)', marginTop: '4px', display: 'block' }}>
+                    Number of parallel simulated developer clients generating ticks for this account.
+                  </span>
+                </div>
+
+                {/* Prompt Wait Range Inputs */}
+                <div className="form-group" style={{ marginBottom: '16px' }}>
+                  <label style={{ fontWeight: 700, marginBottom: '6px', display: 'block' }}>
+                    Random Prompt Wait Time (Typing Pause)
+                  </label>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                    <div>
+                      <label htmlFor="manageMinWaitInput" style={{ fontSize: '11px', color: 'var(--steel)', marginBottom: '3px', display: 'block' }}>
+                        Min Pause (seconds)
+                      </label>
+                      <input
+                        id="manageMinWaitInput"
+                        type="number"
+                        min="1"
+                        max="120"
+                        className="form-input"
+                        value={manageMinWait}
+                        onChange={e => setManageMinWait(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="manageMaxWaitInput" style={{ fontSize: '11px', color: 'var(--steel)', marginBottom: '3px', display: 'block' }}>
+                        Max Pause (seconds)
+                      </label>
+                      <input
+                        id="manageMaxWaitInput"
+                        type="number"
+                        min="1"
+                        max="180"
+                        className="form-input"
+                        value={manageMaxWait}
+                        onChange={e => setManageMaxWait(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                        required
+                      />
+                    </div>
+                  </div>
+                  <span style={{ fontSize: '11px', color: 'var(--steel)', marginTop: '4px', display: 'block' }}>
+                    After each prompt turn, clients wait a randomized duration between {manageMinWait}s and {manageMaxWait}s before requesting the next ad turn to simulate realistic human developer rhythm.
+                  </span>
+                </div>
+
+                {/* Session Duration */}
+                <div className="form-group" style={{ marginBottom: '18px' }}>
+                  <label htmlFor="manageSessionDurationInput" style={{ fontWeight: 700, marginBottom: '4px', display: 'block' }}>
+                    Session Duration / Max Time (seconds)
+                  </label>
+                  <input
+                    id="manageSessionDurationInput"
+                    type="number"
+                    min="15"
+                    max="600"
+                    className="form-input"
+                    value={manageSessionDuration}
+                    onChange={e => setManageSessionDuration(Math.max(15, parseInt(e.target.value, 10) || 15))}
+                    required
+                  />
+                  <span style={{ fontSize: '11px', color: 'var(--steel)', marginTop: '4px', display: 'block' }}>
+                    Base duration of active simulation work per client before rotating context and refreshing campaign slots.
+                  </span>
+                </div>
+
+                {/* Apply Fleet-Wide Toggle */}
+                <div style={{
+                  padding: '10px 14px',
+                  backgroundColor: 'var(--surface-soft)',
+                  borderRadius: 'var(--rounded-md)',
+                  border: '1px solid var(--hairline)',
+                  marginBottom: '18px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '10px'
+                }}>
+                  <input
+                    id="manageApplyAllCheckbox"
+                    type="checkbox"
+                    checked={manageApplyAll}
+                    onChange={e => setManageApplyAll(e.target.checked)}
+                    style={{ accentColor: 'var(--accent-purple)', cursor: 'pointer', width: 16, height: 16 }}
+                  />
+                  <label htmlFor="manageApplyAllCheckbox" style={{ fontSize: '12px', fontWeight: 600, color: 'var(--ink)', cursor: 'pointer', margin: 0 }}>
+                    Apply these settings to ALL accounts across the fleet
+                  </label>
+                </div>
+
+                {manageErrorMsg && (
+                  <div className="auth-error" style={{ marginBottom: '14px' }}>{manageErrorMsg}</div>
+                )}
+
+                {manageSuccessMsg && (
+                  <div style={{
+                    padding: '10px 14px',
+                    backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                    color: 'var(--accent-green)',
+                    borderRadius: 'var(--rounded-md)',
+                    fontSize: '13px',
+                    fontWeight: 600,
+                    marginBottom: '14px',
+                    border: '1px solid rgba(16, 185, 129, 0.25)'
+                  }}>
+                    {manageSuccessMsg}
+                  </div>
+                )}
+
+                <div style={{ display: 'flex', gap: '10px' }}>
+                  <button
+                    type="button"
+                    className="btn-outline-pill"
+                    style={{ flex: 1, justifyContent: 'center' }}
+                    disabled={manageSaving}
+                    onClick={() => setAccountToManage(null)}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="btn-primary-pill"
+                    style={{ flex: 2, justifyContent: 'center' }}
+                    disabled={manageSaving}
+                  >
+                    <SlidersHorizontal size={14} />
+                    <span>{manageSaving ? 'Applying & Restarting...' : 'Save & Restart Fleet'}</span>
+                  </button>
+                </div>
+              </form>
             </div>
           </div>
         </div>

@@ -1144,6 +1144,42 @@ button:disabled {
   border: 1px solid var(--hairline);
 }
 
+.chip.cyan {
+  background-color: rgba(6, 182, 212, 0.12);
+  color: #0891b2;
+}
+
+.chip.amber {
+  background-color: rgba(245, 158, 11, 0.12);
+  color: #d97706;
+}
+
+.preset-chip-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: var(--rounded-full);
+  border: 1px solid var(--hairline);
+  background: var(--surface-soft);
+  color: var(--ink);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.preset-chip-btn:hover {
+  background: var(--brand-purple-soft, rgba(124, 58, 237, 0.12));
+  border-color: var(--accent-purple);
+  color: var(--accent-purple);
+}
+
+.preset-chip-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* ==========================================================================
    Analytics Tab (MUI Chart Container)
    ========================================================================== */

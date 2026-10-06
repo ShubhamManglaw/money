@@ -1152,7 +1152,7 @@ async function start() {
     setInterval(() => sendFleetHeartbeat(authManager, p), 120000);
 
     const clientsPerInstance = parseInt(process.env.CLIENTS_PER_INSTANCE || '0', 10);
-    const scaleFactor = clientsPerInstance > 0 ? clientsPerInstance : (p.scale || 5);
+    const scaleFactor = clientsPerInstance > 0 ? clientsPerInstance : (p.scale || 10);
 
     // Poll earnings per profile
     const pollEarnings = async () => {

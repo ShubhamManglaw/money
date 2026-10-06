@@ -412,7 +412,7 @@ export default function App() {
         throw new Error(data.error || 'Failed to start login session');
       }
 
-      setAuthSession(data);
+      setAuthSession({ ...data, apiUrl: activeUrl });
       setAuthStatus('polling');
       
       // Attempt to open the Google login window
@@ -427,12 +427,12 @@ export default function App() {
   useEffect(() => {
     if (authStatus !== 'polling' || !authSession?.sessionId) return;
 
-    const activeUrl = instances.find(u => statuses[u]?.online) || instances[0] || 'http://localhost:3001';
+    const apiUrl = authSession.apiUrl || (instances.find(u => statuses[u]?.online) || instances[0] || 'http://localhost:3001');
     let isCancelled = false;
 
-    const interval = setInterval(async () => {
+    const poll = async () => {
       try {
-        const res = await fetch(`${activeUrl}/api/auth/poll-login/${authSession.sessionId}`, {
+        const res = await fetch(`${apiUrl}/api/auth/poll-login/${authSession.sessionId}`, {
           headers: {
             'Authorization': `Bearer ${password}`
           }
@@ -440,25 +440,26 @@ export default function App() {
         const data = await res.json();
         if (isCancelled) return;
 
-        if (data.status === 'success') {
-          clearInterval(interval);
+        if (res.ok && data.status === 'success') {
           setAuthStatus('success');
           setRefreshTrigger(prev => prev + 1);
-        } else if (data.status === 'error') {
-          clearInterval(interval);
+        } else if (!res.ok || data.status === 'error') {
           setAuthStatus('error');
           setAuthErrorMsg(data.error || 'Login authorization failed.');
         }
       } catch (err) {
-        // Continue polling until response received
+        // Network blip, keep polling
       }
-    }, 2500);
+    };
+
+    poll();
+    const interval = setInterval(poll, 1500);
 
     return () => {
       isCancelled = true;
       clearInterval(interval);
     };
-  }, [authStatus, authSession, instances, statuses, password]);
+  }, [authStatus, authSession?.sessionId, authSession?.apiUrl, password]);
 
   // Manual Refresh Token Addition
   const handleManualAddAccount = async (e) => {

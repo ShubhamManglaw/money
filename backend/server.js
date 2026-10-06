@@ -747,9 +747,13 @@ app.delete('/api/auth/account/:accountName', checkAuth, async (req, res) => {
     }
 
     await saveConfig(updated);
-    appendLog(`SYSTEM: Account '${accountName}' deleted. Restarting simulator fleet...`);
+    delete profiles[accountName];
+    clearLocalClientStats(process.env.INSTANCE_NAME || 'default');
+    appendLog(`SYSTEM: Account '${accountName}' deleted. Fleet reset.`);
     stopSimulator();
-    setTimeout(() => startSimulator(), 1000);
+    if (updated.length > 0) {
+      setTimeout(() => startSimulator(), 1000);
+    }
 
     res.json({ success: true, totalAccounts: updated.length });
   } catch (err) {

@@ -44,8 +44,9 @@ Once started:
 
 | Command | Description |
 | :--- | :--- |
-| `./start.sh` | Cleanly boots backend instance(s) and Vite React frontend |
-| `./stop.sh` | Terminates all running simulator worker processes and backends |
+| `./start.sh` | Universally boots fleet with 10 clients, installs Node 20+ & dependencies, and enables boot autostart |
+| `./stop.sh` | Terminates all running simulator worker processes, backends, and dashboard |
+| `./setup-autostart.sh` | Manage automatic startup on system boot (`--enable`, `--disable`, `--status`) |
 | `npm run setup` | Installs dependencies across both `backend` and `frontend` |
 | `npm run backend` | Runs the standalone backend server on port 3001 |
 | `npm run frontend` | Runs the Vite development server on port 5174 |

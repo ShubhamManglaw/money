@@ -5,6 +5,48 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const KICKBACKS_BASE = "https://kickbacks-backend-gmdaqm2c7q-uw.a.run.app";
+
+async function syncAccountConsent(accessToken) {
+  if (!accessToken) return;
+  try {
+    let tosVersion = "2026-05-17";
+    try {
+      const getRes = await fetch(`${KICKBACKS_BASE}/v1/me/consent`, {
+        headers: { authorization: `Bearer ${accessToken}`, accept: "application/json" }
+      });
+      if (getRes.ok) {
+        const getData = await getRes.json();
+        if (getData?.current_tos_version) {
+          tosVersion = getData.current_tos_version;
+        }
+      }
+    } catch (_) {}
+
+    await fetch(`${KICKBACKS_BASE}/v1/me/consent`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
+      body: JSON.stringify({ tos_accepted_version: tosVersion, accepted: true, telemetry_opt_in: true })
+    });
+
+    await fetch(`${KICKBACKS_BASE}/v1/me/consent/scopes`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        scopes: {
+          kickbacks_consent: true,
+          boosted_ack: true,
+          ephemeral_targeting: true,
+          third_party_sharing: true,
+          profile_retention: true
+        },
+        boosted_ack: { accepted: true, version: "v2-scopes-3" }
+      })
+    });
+    console.log(`SYSTEM: Account consent synchronized (TOS: ${tosVersion}, telemetry_opt_in: true).`);
+  } catch (consentErr) {
+    console.warn("SYSTEM: Consent auto-accept warning:", consentErr.message);
+  }
+}
 const loginSessions = new Map();
 
 // Periodic cleanup of sessions older than 15 minutes
@@ -22,6 +64,7 @@ const {
   getRevenueHistory,
   getClientStats,
   updateClientTick,
+  updateClientStatus,
   updateClientAd,
   updateClientBilling,
   distributeClientRevenue,
@@ -284,9 +327,17 @@ function startSimulator() {
       } else if (status) {
         statusStr = `HTTP Error (${status})`;
       }
-      updateClientTick(clientName, process.env.INSTANCE_NAME || 'default', clientId, adId, adTitle, statusStr, lastTickTime).catch(err => {
-        console.error("SYSTEM: Error updating client tick in DB:", err.message);
-      });
+
+      const isStatusOnly = statusStr.includes('Next prompt') || statusStr.includes('Rotating') || statusStr.includes('cooldown') || statusStr.includes('Waiting');
+      if (isStatusOnly) {
+        updateClientStatus(clientName, process.env.INSTANCE_NAME || 'default', clientId, adId, adTitle, statusStr, lastTickTime).catch(err => {
+          console.error("SYSTEM: Error updating client status in DB:", err.message);
+        });
+      } else {
+        updateClientTick(clientName, process.env.INSTANCE_NAME || 'default', clientId, adId, adTitle, statusStr, lastTickTime).catch(err => {
+          console.error("SYSTEM: Error updating client tick in DB:", err.message);
+        });
+      }
     } else if (msg.type === 'client_billing') {
       const { clientName, status, billed, measurement } = msg;
       const isHttpSuccess = (status === 200 || status === 204);
@@ -611,23 +662,7 @@ app.get('/api/auth/poll-login/:sessionId', checkAuth, async (req, res) => {
       const credentials = await pollRes.json();
       
       // 1. Auto-accept Terms of Service & Boosted Mode
-      try {
-        await fetch(`${KICKBACKS_BASE}/v1/me/consent`, {
-          method: "POST",
-          headers: { "authorization": `Bearer ${credentials.access_token}`, "content-type": "application/json" },
-          body: JSON.stringify({ tos_accepted_version: "2026-03-01", accepted: true })
-        });
-        await fetch(`${KICKBACKS_BASE}/v1/me/consent/scopes`, {
-          method: "POST",
-          headers: { "authorization": `Bearer ${credentials.access_token}`, "content-type": "application/json" },
-          body: JSON.stringify({
-            scopes: { kickbacks_consent: true, boosted_ack: true },
-            boosted_ack: { accepted: true, version: "v2-scopes-3" }
-          })
-        });
-      } catch (consentErr) {
-        console.warn("SYSTEM: Consent auto-accept warning:", consentErr.message);
-      }
+      await syncAccountConsent(credentials.access_token);
 
       // 2. Append to fleet config
       const { saveConfig } = require('./db');
@@ -687,21 +722,7 @@ app.post('/api/auth/add-account', checkAuth, async (req, res) => {
 
     // Auto-accept consent with fresh access token
     if (tokenData.access_token) {
-      try {
-        await fetch(`${KICKBACKS_BASE}/v1/me/consent`, {
-          method: "POST",
-          headers: { "authorization": `Bearer ${tokenData.access_token}`, "content-type": "application/json" },
-          body: JSON.stringify({ tos_accepted_version: "2026-03-01", accepted: true })
-        });
-        await fetch(`${KICKBACKS_BASE}/v1/me/consent/scopes`, {
-          method: "POST",
-          headers: { "authorization": `Bearer ${tokenData.access_token}`, "content-type": "application/json" },
-          body: JSON.stringify({
-            scopes: { kickbacks_consent: true, boosted_ack: true },
-            boosted_ack: { accepted: true, version: "v2-scopes-3" }
-          })
-        });
-      } catch (_) {}
+      await syncAccountConsent(tokenData.access_token);
     }
 
     const { saveConfig } = require('./db');

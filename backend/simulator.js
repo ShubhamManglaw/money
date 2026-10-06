@@ -499,6 +499,7 @@ async function runVirtualClient(name, clientId, authManager) {
   let activeAd = null;
   let viewTickTimer = null;
   let rotationTimer = null;
+  let pauseCountdownInterval = null;
   let accruedVisibleMs = 0;
   let lastAccrualMs = 0;
   let corr = "";
@@ -511,148 +512,140 @@ async function runVirtualClient(name, clientId, authManager) {
 
     // 1. Primary: Boosted Mode v2 serve endpoint (POST /v2/serve)
     // Request statusline surface first — this is where paid campaign_tick ads appear
-    // (overlay/statusbar/banner only return house_tick filler ads in most geos)
     const SERVE_SURFACES = ['statusline', 'overlay', 'claude-code', 'statusbar', 'banner', 'extension'];
+    let fallbackCandidateAd = null;
+    let fallbackSurface = 'statusline';
+    let fallbackRotation = 60000;
+
     for (const serveSurface of SERVE_SURFACES) {
-    try {
-      const devCtx = getDevContext();
+      try {
+        const devCtx = getDevContext();
 
-      const v2Body = {
-        v: 2,
-        client_id: clientId,
-        surface: serveSurface,
-        pull_capable: true,
-        refresh: false,
-        consent: { kickbacks_consent: true },
-        locale: "en-US",
-        redactions: 0,
-        context: {
-          transcript: devCtx.transcript,
-          fileTypes: devCtx.fileTypes,
-          repo: "",
-          userPrompts: devCtx.userPrompts,
-          aiTurns: devCtx.aiTurns,
-          ext: {
-            work_context: {
-              version: 1,
-              provider: "claude",
-              session: devCtx.sessionHash
-            }
+        const v2Body = {
+          v: 2,
+          client_id: clientId,
+          surface: serveSurface,
+          pull_capable: true,
+          refresh: false,
+          consent: { kickbacks_consent: true },
+          locale: "en-US",
+          redactions: 0,
+          context: {
+            transcript: devCtx.transcript,
+            fileTypes: devCtx.fileTypes,
+            repo: "",
+            userPrompts: devCtx.userPrompts,
+            aiTurns: devCtx.aiTurns,
+            ext: {
+              work_context: {
+                version: 1,
+                provider: "claude",
+                session: devCtx.sessionHash
+              }
+            },
+            deviceOs: process.platform,
+            osVersion: os.release(),
+            vscodeVersion: "1.98.2",
+            extensionVersion: EXT_VERSION,
+            userAgent: `kickbacks-vscode/${EXT_VERSION} (${process.platform}-${process.arch})`,
+            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"
           },
-          deviceOs: process.platform,
-          osVersion: os.release(),
-          vscodeVersion: "1.98.2",
-          extensionVersion: EXT_VERSION,
-          userAgent: `kickbacks-vscode/${EXT_VERSION} (${process.platform}-${process.arch})`,
-          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"
-        },
-        human_activity_ts: Date.now() - Math.floor(Math.random() * 3000 + 500),
-        client_ts: Date.now()
-      };
+          human_activity_ts: Date.now() - Math.floor(Math.random() * 3000 + 500),
+          client_ts: Date.now()
+        };
 
-      const res = await fetch(`${BACKEND_BASE}/v2/serve`, {
-        method: 'POST',
-        headers: {
-          'authorization': `Bearer ${token}`,
-          'user-agent': `kickbacks-vscode/${EXT_VERSION} (${process.platform}-${process.arch})`,
-          'content-type': 'application/json',
-          'accept': 'application/json'
-        },
-        body: JSON.stringify(v2Body)
-      });
+        const res = await fetch(`${BACKEND_BASE}/v2/serve`, {
+          method: 'POST',
+          headers: {
+            'authorization': `Bearer ${token}`,
+            'user-agent': `kickbacks-vscode/${EXT_VERSION} (${process.platform}-${process.arch})`,
+            'content-type': 'application/json',
+            'accept': 'application/json'
+          },
+          body: JSON.stringify(v2Body)
+        });
 
-      if (res.status === 401 || res.status === 403) {
-        console.log(`[${name}] /v2/serve auth rejection (${res.status}). Invalidating token & retrying...`);
-        authManager.invalidateToken();
-        token = await authManager.refresh();
-        if (token) return fetchAd();
-        return null;
-      }
+        if (res.status === 401 || res.status === 403) {
+          console.log(`[${name}] /v2/serve auth rejection (${res.status}). Invalidating token & retrying...`);
+          authManager.invalidateToken();
+          token = await authManager.refresh();
+          if (token) return fetchAd();
+          return null;
+        }
 
-      if (res.ok) {
-        const body = await res.json();
-        if (body && Array.isArray(body.ads) && body.ads.length > 0) {
-          // Check funding sources — 'prepaid' or 'campaign' means real money
-          const fundingSources = body.targeting_meta?.funding_sources || [];
-          const hasPaidFunding = fundingSources.some(s => s === 'prepaid' || s === 'campaign');
+        if (res.status === 204) {
+          continue; // No ad currently available on this surface
+        }
 
-          // Prioritize paid commercial campaigns (campaign_tick).
-          // House ads (house-clone-..., billing_strategy: house_tick) do NOT credit money.
-          const paidAds = body.ads.filter(a => {
-            if (a.ad_id?.startsWith('house-') || a.ad_id?.startsWith('house:')) return false;
-            if (a.campaign_id?.startsWith('house-') || a.campaign_id?.startsWith('house:')) return false;
-            if (a.source === 'house') return false;
-            // Decode session_token to check billing_strategy
-            try {
-              const payload = JSON.parse(Buffer.from(a.session_token.split('.')[1], 'base64').toString());
-              if (payload.billing_strategy === 'house_tick') return false;
-            } catch {}
-            return true;
-          });
+        if (res.ok) {
+          let body = null;
+          try {
+            body = await res.json();
+          } catch (_) {
+            continue;
+          }
 
-          if (paidAds.length > 0) {
-            const selected = paidAds.find(a => a.campaign_id !== lastCampaignId) || paidAds[0];
-            selected.title_text = selected.ad_line || selected.brand || selected.title_text || "Sponsored Ad";
-            selected._serveSurface = serveSurface; // Track which surface returned this ad
-            if (selected.campaign_id) lastCampaignId = selected.campaign_id;
-            // Hold sessions longer for more billing ticks — minimum 60s, up to 120s
-            const serverRotation = (body.rotation_seconds || 30) * 1000;
-            const rotationIntervalMs = Math.max(60000, serverRotation * 2 + Math.floor(Math.random() * 30000));
-            console.log(`[${name}] ✅ Got PAID commercial ad from ${serveSurface}: "${selected.title_text}" (campaign_tick, rotation: ${rotationIntervalMs/1000}s)`);
-            return {
-              ad: selected,
-              rotationIntervalMs,
-              viewThresholdMs: 10000,
-              tickIntervalMs: 10000
-            };
-          } else {
-            console.log(`[${name}] Surface "${serveSurface}" returned only house ads (funding: ${fundingSources.join(',')}). Trying next surface...`);
-            continue; // Try next surface
+          if (body && Array.isArray(body.ads) && body.ads.length > 0) {
+            // Check for paid commercial campaigns (campaign_tick)
+            const paidAds = body.ads.filter(a => {
+              if (a.ad_id?.startsWith('house-') || a.ad_id?.startsWith('house:')) return false;
+              if (a.campaign_id?.startsWith('house-') || a.campaign_id?.startsWith('house:')) return false;
+              if (a.source === 'house') return false;
+              try {
+                const payload = JSON.parse(Buffer.from(a.session_token.split('.')[1], 'base64').toString());
+                if (payload.billing_strategy === 'house_tick') return false;
+              } catch {}
+              return true;
+            });
+
+            if (paidAds.length > 0) {
+              const selected = paidAds.find(a => a.campaign_id !== lastCampaignId) || paidAds[0];
+              selected.title_text = selected.ad_line || selected.brand || selected.title_text || "Sponsored Ad";
+              selected._serveSurface = serveSurface;
+              if (selected.campaign_id) lastCampaignId = selected.campaign_id;
+              const serverRotation = (body.rotation_seconds || 30) * 1000;
+              const rotationIntervalMs = Math.max(60000, serverRotation * 2 + Math.floor(Math.random() * 30000));
+              console.log(`[${name}] ✅ Got PAID commercial ad from ${serveSurface}: "${selected.title_text}" (rotation: ${rotationIntervalMs/1000}s)`);
+              return {
+                ad: selected,
+                rotationIntervalMs,
+                viewThresholdMs: 10000,
+                tickIntervalMs: 10000
+              };
+            } else {
+              // Cache first available valid ad as immediate fallback
+              if (!fallbackCandidateAd && body.ads.length > 0) {
+                const candidate = body.ads.find(a => a.campaign_id !== lastCampaignId) || body.ads[0];
+                candidate.title_text = candidate.ad_line || candidate.brand || candidate.title_text || "Sponsored Ad";
+                candidate._serveSurface = serveSurface;
+                fallbackCandidateAd = candidate;
+                fallbackSurface = serveSurface;
+                const serverRotation = (body.rotation_seconds || 30) * 1000;
+                fallbackRotation = Math.max(60000, serverRotation * 2 + Math.floor(Math.random() * 30000));
+              }
+              // If we already have a candidate ad from statusline, check at most 1 other surface for paid ads
+              if (fallbackCandidateAd && (serveSurface === 'overlay' || serveSurface === 'claude-code')) {
+                break;
+              }
+            }
           }
         }
-      } else {
-        console.warn(`[${name}] /v2/serve [${serveSurface}] returned status ${res.status}, trying next surface...`);
+      } catch (err) {
+        console.warn(`[${name}] /v2/serve [${serveSurface}] error: ${err.message}`);
       }
-    } catch (err) {
-      console.warn(`[${name}] /v2/serve [${serveSurface}] error: ${err.message}, trying next surface...`);
-    }
     } // end SERVE_SURFACES loop
 
-    // If all surfaces returned only house ads, fall back to house ads from the last surface tried
-    // (still sends metrics — server decides if it credits)
-    console.log(`[${name}] No paid ads found on any surface. Falling back to house ads or legacy portfolio...`);
-    try {
-      const devCtx = getDevContext();
-      const fallbackRes = await fetch(`${BACKEND_BASE}/v2/serve`, {
-        method: 'POST',
-        headers: {
-          'authorization': `Bearer ${token}`,
-          'user-agent': `kickbacks-vscode/${EXT_VERSION} (${process.platform}-${process.arch})`,
-          'content-type': 'application/json',
-          'accept': 'application/json'
-        },
-        body: JSON.stringify({
-          v: 2, client_id: clientId, surface: 'statusline', pull_capable: true,
-          consent: { kickbacks_consent: true }, locale: "en-US", redactions: 0,
-          context: { transcript: devCtx.transcript, fileTypes: devCtx.fileTypes, repo: "",
-            userPrompts: devCtx.userPrompts, aiTurns: devCtx.aiTurns,
-            deviceOs: process.platform, osVersion: os.release(), vscodeVersion: "1.98.2",
-            extensionVersion: EXT_VERSION, userAgent: `kickbacks-vscode/${EXT_VERSION} (${process.platform}-${process.arch})`,
-            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC" },
-          human_activity_ts: Date.now() - 2000, client_ts: Date.now()
-        })
-      });
-      if (fallbackRes.ok) {
-        const fbBody = await fallbackRes.json();
-        if (fbBody?.ads?.length > 0) {
-          const selected = fbBody.ads[0];
-          selected.title_text = selected.ad_line || selected.brand || selected.title_text || "Sponsored Ad";
-          selected._serveSurface = 'statusline';
-          if (selected.campaign_id) lastCampaignId = selected.campaign_id;
-          return { ad: selected, rotationIntervalMs: 60000, viewThresholdMs: 10000, tickIntervalMs: 10000 };
-        }
-      }
-    } catch {}
+    // If candidate ad was captured from /v2/serve, use it immediately
+    if (fallbackCandidateAd) {
+      if (fallbackCandidateAd.campaign_id) lastCampaignId = fallbackCandidateAd.campaign_id;
+      console.log(`[${name}] Using verified ad from ${fallbackSurface}: "${fallbackCandidateAd.title_text}" (rotation: ${fallbackRotation/1000}s)`);
+      return {
+        ad: fallbackCandidateAd,
+        rotationIntervalMs: fallbackRotation,
+        viewThresholdMs: 10000,
+        tickIntervalMs: 10000
+      };
+    }
 
     // 2. Fallback: Legacy v1 portfolio
     try {
@@ -668,7 +661,6 @@ async function runVirtualClient(name, clientId, authManager) {
       });
 
       if (res.status === 401 || res.status === 403) {
-        console.log(`[${name}] /v1/portfolio auth rejection. Invalidating token & retrying...`);
         authManager.invalidateToken();
         token = await authManager.refresh();
         if (token) return fetchAd();
@@ -681,8 +673,9 @@ async function runVirtualClient(name, clientId, authManager) {
         if (ads.length > 0) {
           const paidAds = ads.filter(a => !a.ad_id?.startsWith('house-') && !a.campaign_id?.startsWith('house-') && a.source !== 'house');
           const candidatePool = paidAds.length > 0 ? paidAds : ads;
-          const selected = candidatePool[0];
+          const selected = candidatePool.find(a => a.campaign_id !== lastCampaignId) || candidatePool[0];
           selected.title_text = selected.ad_line || selected.brand || selected.title_text || "Sponsored Ad";
+          selected._serveSurface = 'statusline';
           if (selected.campaign_id) lastCampaignId = selected.campaign_id;
           const rotationIntervalMs = body.rotation_interval_seconds ? (body.rotation_interval_seconds * 1000) : 60000;
           const viewThresholdMs = body.view_threshold_seconds ? (body.view_threshold_seconds * 1000) : 10000;
@@ -876,6 +869,14 @@ async function runVirtualClient(name, clientId, authManager) {
       clearInterval(viewTickTimer);
       viewTickTimer = null;
     }
+    if (pauseCountdownInterval) {
+      clearInterval(pauseCountdownInterval);
+      pauseCountdownInterval = null;
+    }
+    if (rotationTimer) {
+      clearTimeout(rotationTimer);
+      rotationTimer = null;
+    }
     console.log(`[${name}] Stopped showing ad. Total visible ms: ${accruedVisibleMs}`);
     accruedVisibleMs = 0;
     lastAccrualMs = 0;
@@ -935,7 +936,8 @@ async function runVirtualClient(name, clientId, authManager) {
       endShow();
       // Natural pause between sessions (8 - 15s) simulating human prompt cycle
       const humanPauseMs = 8000 + Math.floor(Math.random() * 7000);
-      console.log(`[${name}] Next ad rotation in ${(humanPauseMs/1000).toFixed(1)}s...`);
+      let pauseSecRemaining = Math.round(humanPauseMs / 1000);
+      console.log(`[${name}] Next ad rotation in ${pauseSecRemaining}s...`);
       if (process.send) {
         process.send({
           type: 'client_tick',
@@ -943,11 +945,38 @@ async function runVirtualClient(name, clientId, authManager) {
           clientId: clientId,
           adId: ad.ad_id,
           adTitle: ad.title_text,
-          status: `Next prompt in ${(humanPauseMs/1000).toFixed(0)}s`,
+          status: `Next prompt in ${pauseSecRemaining}s`,
           visibleMs: accruedVisibleMs
         });
       }
-      setTimeout(rotateAd, humanPauseMs);
+
+      pauseCountdownInterval = setInterval(() => {
+        pauseSecRemaining -= 2;
+        if (pauseSecRemaining > 1) {
+          if (process.send) {
+            process.send({
+              type: 'client_tick',
+              clientName: name,
+              clientId: clientId,
+              adId: ad.ad_id,
+              adTitle: ad.title_text,
+              status: `Next prompt in ${pauseSecRemaining}s`,
+              visibleMs: accruedVisibleMs
+            });
+          }
+        } else {
+          clearInterval(pauseCountdownInterval);
+          pauseCountdownInterval = null;
+        }
+      }, 2000);
+
+      rotationTimer = setTimeout(() => {
+        if (pauseCountdownInterval) {
+          clearInterval(pauseCountdownInterval);
+          pauseCountdownInterval = null;
+        }
+        rotateAd();
+      }, humanPauseMs);
     }, rotationIntervalMs);
 
     viewTickTimer = setInterval(async () => {
@@ -1017,14 +1046,64 @@ async function runVirtualClient(name, clientId, authManager) {
 
   async function rotateAd() {
     endShow();
+    if (process.send) {
+      process.send({
+        type: 'client_tick',
+        clientName: name,
+        clientId: clientId,
+        adId: activeAd?.ad_id || '',
+        adTitle: activeAd?.title_text || 'Selecting ad...',
+        status: 'Rotating ad...',
+        visibleMs: 0
+      });
+    }
+
     const portfolio = await fetchAd();
     if (portfolio && portfolio.ad) {
       activeAd = portfolio.ad;
       await startShow(activeAd, portfolio.viewThresholdMs, portfolio.tickIntervalMs, portfolio.rotationIntervalMs);
     } else {
       console.log(`[${name}] No ad returned or in cooldown. Retrying in 15s...`);
-      if (rotationTimer) clearTimeout(rotationTimer);
-      rotationTimer = setTimeout(rotateAd, 15000);
+      let cooldownSecRemaining = 15;
+      if (process.send) {
+        process.send({
+          type: 'client_tick',
+          clientName: name,
+          clientId: clientId,
+          adId: '',
+          adTitle: 'Waiting for inventory',
+          status: `In cooldown (${cooldownSecRemaining}s)`,
+          visibleMs: 0
+        });
+      }
+
+      pauseCountdownInterval = setInterval(() => {
+        cooldownSecRemaining -= 3;
+        if (cooldownSecRemaining > 1) {
+          if (process.send) {
+            process.send({
+              type: 'client_tick',
+              clientName: name,
+              clientId: clientId,
+              adId: '',
+              adTitle: 'Waiting for inventory',
+              status: `In cooldown (${cooldownSecRemaining}s)`,
+              visibleMs: 0
+            });
+          }
+        } else {
+          clearInterval(pauseCountdownInterval);
+          pauseCountdownInterval = null;
+        }
+      }, 3000);
+
+      rotationTimer = setTimeout(() => {
+        if (pauseCountdownInterval) {
+          clearInterval(pauseCountdownInterval);
+          pauseCountdownInterval = null;
+        }
+        rotateAd();
+      }, 15000);
     }
   }
 
@@ -1035,12 +1114,26 @@ async function ensureBoostedConsent(authManager, profileName) {
   try {
     const token = await authManager.getAccessToken();
     if (!token) return;
+
+    // Dynamically retrieve required TOS version from Kickbacks backend
+    let tosVersion = "2026-05-17";
+    try {
+      const getRes = await fetch(`${BACKEND_BASE}/v1/me/consent`, {
+        headers: { 'authorization': `Bearer ${token}`, 'accept': 'application/json' }
+      });
+      if (getRes.ok) {
+        const getData = await getRes.json();
+        if (getData?.current_tos_version) {
+          tosVersion = getData.current_tos_version;
+        }
+      }
+    } catch (_) {}
     
     // 1. Core TOS Consent & Telemetry
     await fetch(`${BACKEND_BASE}/v1/me/consent`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'authorization': `Bearer ${token}` },
-      body: JSON.stringify({ tos_accepted_version: "2026-05-17", accepted: true, telemetry_opt_in: true })
+      body: JSON.stringify({ tos_accepted_version: tosVersion, accepted: true, telemetry_opt_in: true })
     }).catch(() => {});
 
     // 2. Boosted Mode Scoped Consent
@@ -1062,7 +1155,7 @@ async function ensureBoostedConsent(authManager, profileName) {
       })
     });
     if (res.ok) {
-      console.log(`[Auth:${profileName}] 🚀 Boosted Mode consent scopes synchronized (v2-scopes-3, telemetry_opt_in: true).`);
+      console.log(`[Auth:${profileName}] 🚀 Boosted Mode consent scopes synchronized (TOS: ${tosVersion}, telemetry_opt_in: true).`);
     }
   } catch (err) {
     console.warn(`[Auth:${profileName}] Warning: Boosted consent sync:`, err.message);
@@ -1140,7 +1233,7 @@ async function start() {
 
   console.log(`Starting simulator with ${targetProfiles.length} active profile(s)...`);
 
-  targetProfiles.forEach(async ({ p, idx }) => {
+  for (const { p, idx } of targetProfiles) {
     const authManager = new TokenManager(p, idx, config);
     authManager.startPreemptiveRefresh();
     
@@ -1220,7 +1313,7 @@ async function start() {
         });
       }, startDelay);
     }
-  });
+  }
 }
 
 // Exception handlers

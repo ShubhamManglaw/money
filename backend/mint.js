@@ -42,10 +42,21 @@ async function mint() {
 
         // 1. Auto-accept Terms of Service & Boosted Mode
         try {
+          let tosVersion = "2026-05-17";
+          try {
+            const getRes = await fetch(`${BACKEND_BASE}/v1/me/consent`, {
+              headers: { authorization: `Bearer ${credentials.access_token}`, accept: "application/json" }
+            });
+            if (getRes.ok) {
+              const getData = await getRes.json();
+              if (getData?.current_tos_version) tosVersion = getData.current_tos_version;
+            }
+          } catch (_) {}
+
           await fetch(`${BACKEND_BASE}/v1/me/consent`, {
             method: "POST",
             headers: { "authorization": `Bearer ${credentials.access_token}`, "content-type": "application/json" },
-            body: JSON.stringify({ tos_accepted_version: "2026-03-01", accepted: true })
+            body: JSON.stringify({ tos_accepted_version: tosVersion, accepted: true, telemetry_opt_in: true })
           });
           await fetch(`${BACKEND_BASE}/v1/me/consent/scopes`, {
             method: "POST",
@@ -55,7 +66,7 @@ async function mint() {
               boosted_ack: { accepted: true, version: "v2-scopes-3" }
             })
           });
-          console.log(`✅ TOS & Boosted Consent Auto-Accepted.`);
+          console.log(`✅ TOS (${tosVersion}) & Boosted Consent Auto-Accepted.`);
         } catch (e) {
           console.log(`⚠️ Consent setup error: ${e.message}`);
         }

@@ -383,6 +383,52 @@ async function updateClientAd(clientName, instanceName, clientId, adId, adTitle,
   }
 }
 
+async function updateClientStatus(clientName, instanceName, clientId, adId, adTitle, status, lastTickTime) {
+  if (process.env.DATABASE_URL) {
+    try {
+      const query = `
+        INSERT INTO client_stats (client_name, instance_name, client_id, ad_id, ad_title, ticks, last_status, last_tick_time, updated_at)
+        VALUES ($1, $2, $3, $4, $5, 0, $6, $7, NOW())
+        ON CONFLICT (client_name) DO UPDATE SET
+          instance_name = EXCLUDED.instance_name,
+          client_id = COALESCE(EXCLUDED.client_id, client_stats.client_id),
+          ad_id = COALESCE(EXCLUDED.ad_id, client_stats.ad_id),
+          ad_title = COALESCE(EXCLUDED.ad_title, client_stats.ad_title),
+          last_status = EXCLUDED.last_status,
+          last_tick_time = EXCLUDED.last_tick_time,
+          updated_at = NOW();
+      `;
+      await runPgQuery(query, [clientName, instanceName, clientId, adId, adTitle, status, lastTickTime]);
+    } catch (err) {
+      console.error("SYSTEM: updateClientStatus DB error:", err.message);
+    }
+  } else {
+    if (!localClientStats[clientName]) {
+      localClientStats[clientName] = {
+        client_name: clientName,
+        instance_name: instanceName,
+        client_id: clientId,
+        ad_id: adId,
+        ad_title: adTitle,
+        ticks: 0,
+        billing_count: 0,
+        revenue_usd: 0,
+        last_status: status,
+        last_tick_time: lastTickTime,
+        updated_at: new Date().toISOString()
+      };
+    } else {
+      const c = localClientStats[clientName];
+      if (clientId) c.client_id = clientId;
+      if (adId) c.ad_id = adId;
+      if (adTitle) c.ad_title = adTitle;
+      c.last_status = status;
+      c.last_tick_time = lastTickTime;
+      c.updated_at = new Date().toISOString();
+    }
+  }
+}
+
 async function updateClientBilling(clientName, instanceName, status, isSuccess, billRevenue = 0.0001) {
   if (process.env.DATABASE_URL) {
     try {
@@ -483,6 +529,7 @@ module.exports = {
   getRevenueHistory,
   getClientStats,
   updateClientTick,
+  updateClientStatus,
   updateClientAd,
   updateClientBilling,
   distributeClientRevenue,

@@ -1159,7 +1159,7 @@ export default function App() {
                               const isUnbilled = client.lastStatus?.includes('Unbilled');
                               const isSuccess = client.lastStatus?.includes('Success');
                               const isViewing = client.lastStatus?.includes('Viewing');
-                              const isRotating = client.lastStatus?.includes('Next prompt') || client.lastStatus?.includes('Rotating');
+                              const isRotating = client.lastStatus?.includes('Next prompt') || client.lastStatus?.includes('Rotating') || client.lastStatus?.includes('cooldown');
                               const isError = client.lastStatus?.includes('Error');
                               const isStopped = client.lastStatus?.includes('Stopped');
 

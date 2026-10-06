@@ -151,25 +151,17 @@ pkill -9 -f "server.js" 2>/dev/null || true
 pkill -9 -f "vite" 2>/dev/null || true
 
 # ------------------------------------------------------------------
-# 5. Launch Backend Fleet
+# 5. Launch Backend Engine
 # ------------------------------------------------------------------
-echo "2. Starting $TOTAL_INSTANCES dedicated backend instances ($CLIENTS_PER_INSTANCE clients each, $TOTAL_CLIENTS clients total)..."
-for i in $(seq 1 $TOTAL_INSTANCES); do
-  port=$((3000 + i))
-  account_idx=$((i - 1))
-  account_name=$(node -e "try { const fs=require('fs'); const c=JSON.parse(fs.readFileSync('./backend/config.json')); console.log(c[$account_idx]?.name || 'account_$i'); } catch(e) { console.log('account_$i'); }")
-
-  (
-    PORT=$port \
-    INSTANCE_NAME="inst_${i} · ${account_name}" \
-    ACCOUNT_INDEX=$account_idx \
-    DEDICATED_ACCOUNT=true \
-    CLIENTS_PER_INSTANCE=$CLIENTS_PER_INSTANCE \
-    TOTAL_INSTANCES=$TOTAL_INSTANCES \
-    nohup node "$DIR/backend/server.js" </dev/null >> "$DIR/logs/backend_$i.log" 2>&1 &
-  )
-  echo "   -> [Backend $i] Dedicated to '$account_name' ($CLIENTS_PER_INSTANCE clients) on http://localhost:$port"
-done
+echo "2. Starting unified multi-account backend engine ($CLIENTS_PER_INSTANCE clients per account)..."
+(
+  PORT=3001 \
+  INSTANCE_NAME="kickbacks-fleet" \
+  CLIENTS_PER_INSTANCE=$CLIENTS_PER_INSTANCE \
+  TOTAL_INSTANCES=1 \
+  nohup node "$DIR/backend/server.js" </dev/null >> "$DIR/logs/backend_1.log" 2>&1 &
+)
+echo "   -> [Backend API] Unified engine live on http://localhost:3001"
 
 # ------------------------------------------------------------------
 # 6. Launch React Frontend Dashboard
@@ -185,12 +177,8 @@ sleep 2
 
 echo ""
 echo "========================================================"
-echo "✨ Fleet of $TOTAL_INSTANCES dedicated backend(s) is live and running!"
+echo "✨ Kickbacks Fleet is live and running!"
 echo "   - Dashboard: http://localhost:5174"
-for i in $(seq 1 $TOTAL_INSTANCES); do
-  port=$((3000 + i))
-  account_idx=$((i - 1))
-  account_name=$(node -e "try { const fs=require('fs'); const c=JSON.parse(fs.readFileSync('./backend/config.json')); console.log(c[$account_idx]?.name || 'account_$i'); } catch(e) { console.log('account_$i'); }")
-  echo "   - Backend $i ($account_name): http://localhost:$port"
-done
+echo "   - Backend API: http://localhost:3001"
+echo "   - Configured Accounts: $NUM_ACCOUNTS"
 echo "========================================================"

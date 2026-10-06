@@ -1179,12 +1179,12 @@ async function start() {
     let startIdx = 0;
     let endIdx = scaleFactor;
 
-    // In shared multi-profile mode across instances, slice indices
-    if (targetProfiles.length > 1) {
+    // In multi-instance distributed cluster mode, slice indices across nodes
+    const totalInstances = parseInt(process.env.TOTAL_INSTANCES || '1', 10);
+    if (totalInstances > 1 && targetProfiles.length > 1) {
       const instanceMatch = process.env.INSTANCE_NAME?.match(/inst(?:ance)?_(\d+)/i);
       if (instanceMatch) {
         const instNum = parseInt(instanceMatch[1], 10);
-        const totalInstances = parseInt(process.env.TOTAL_INSTANCES || '10', 10);
 
         if (clientsPerInstance > 0) {
           const numProfiles = targetProfiles.length;

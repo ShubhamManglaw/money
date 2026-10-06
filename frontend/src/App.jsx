@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, lazy, Suspense } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo, lazy, Suspense } from 'react';
 import {
   Activity, ShieldAlert, Cpu, CircleDollarSign, Terminal,
   Settings, LineChart as LineChartIcon, RefreshCw, LogOut, Plus, Trash2,
@@ -61,6 +61,54 @@ export default function App() {
   const [loading, setLoading] = useState(() => Boolean(localStorage.getItem('dashboard_password')));
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [selectedAccount, setSelectedAccount] = useState('all');
+
+  // Derive list of individual accounts across backend instances
+  const displayedAccounts = useMemo(() => {
+    const list = [];
+    Object.keys(statuses).forEach(url => {
+      const s = statuses[url];
+      if (!s || !s.online) return;
+
+      const configProfs = Array.isArray(s.configProfiles) ? s.configProfiles : [];
+      const runtimeProfs = Array.isArray(s.profiles) ? s.profiles : [];
+
+      const names = Array.from(new Set([
+        ...configProfs.map(p => p.name).filter(Boolean),
+        ...runtimeProfs.map(p => p.name).filter(Boolean)
+      ]));
+
+      if (names.length === 0) {
+        list.push({
+          id: `${url}-default`,
+          url,
+          name: s.instanceName || 'Primary Account',
+          profile: s.profiles?.[0] || null,
+          clients: s.clients || [],
+          isOnline: s.online,
+          isRunning: s.running
+        });
+      } else {
+        names.forEach((accName, accIndex) => {
+          const profile = runtimeProfs.find(p => p.name === accName) || configProfs.find(p => p.name === accName) || null;
+          const clients = (s.clients || []).filter(c => 
+            c.name.startsWith(accName) || 
+            (names.length === 1 && !c.name.includes('account_'))
+          );
+          list.push({
+            id: `${url}-${accName}`,
+            url,
+            name: accName,
+            accIndex,
+            profile,
+            clients,
+            isOnline: s.online,
+            isRunning: s.running
+          });
+        });
+      }
+    });
+    return list;
+  }, [statuses]);
 
   // Account Connect Modal & Auth States
   const [showConnectModal, setShowConnectModal] = useState(false);
@@ -986,18 +1034,15 @@ export default function App() {
               >
                 All Accounts ({allClientsList.length})
               </button>
-              {instances.map((url, idx) => {
-                const s = statuses[url];
-                const profile = s?.profiles?.[0];
-                const accountName = profile?.name || s?.instanceName?.split(' · ')[1] || `Account ${idx + 1}`;
-                const count = s?.clients?.length || 0;
+              {displayedAccounts.map((acc, idx) => {
+                const count = acc.clients?.length || 0;
                 return (
                   <button
-                    key={url}
+                    key={acc.id}
                     className={`filter-tab-pill ${selectedAccount === String(idx) ? 'active' : ''}`}
                     onClick={() => setSelectedAccount(String(idx))}
                   >
-                    #{idx + 1} {accountName} ({count})
+                    #{idx + 1} {acc.name} ({count})
                   </button>
                 );
               })}
@@ -1019,23 +1064,18 @@ export default function App() {
 
             {/* Divided Account Panels with their respective clients */}
             <div className="account-sections-list">
-              {instances.map((url, idx) => {
+              {displayedAccounts.map((acc, idx) => {
                 if (selectedAccount !== 'all' && selectedAccount !== String(idx)) {
                   return null;
                 }
-                const s = statuses[url];
-                const profile = s?.profiles?.[0];
-                const accountName = profile?.name || s?.instanceName?.split(' · ')[1] || `account_${idx + 1}`;
-                const clients = s?.clients || [];
+                const { url, name: accountName, profile, clients, isOnline, isRunning } = acc;
                 const activeClientsCount = clients.filter(c => c.lastStatus !== 'Stopped' && c.lastStatus !== 'inactive').length;
                 const acctClientRev = clients.reduce((sum, c) => sum + (parseFloat(c.revenue_usd) || 0), 0);
                 const todayUsd = (profile?.currentTodayUsd !== undefined && profile.currentTodayUsd > 0) ? profile.currentTodayUsd : acctClientRev;
                 const lifetimeUsd = (profile?.currentLifetimeUsd !== undefined && profile.currentLifetimeUsd > 0) ? (profile.currentLifetimeUsd + acctClientRev) : acctClientRev;
-                const isOnline = Boolean(s?.online);
-                const isRunning = Boolean(s?.running);
 
                 return (
-                  <div key={url} className="panel" style={{ marginBottom: '22px', padding: 0, overflow: 'hidden' }}>
+                  <div key={acc.id} className="panel" style={{ marginBottom: '22px', padding: 0, overflow: 'hidden' }}>
                     {/* Dedicated Account Header Bar */}
                     <div style={{
                       padding: '16px 20px',
@@ -1069,14 +1109,22 @@ export default function App() {
                         <div style={{ display: 'flex', gap: '8px' }}>
                           {isOnline && !isRunning && (
                             <button className="btn-card-action start" onClick={() => startSingleSimulator(url)} style={{ padding: '4px 12px', fontSize: '11px' }}>
-                              <Play size={10} fill="currentColor" /> Start Account
+                              <Play size={10} fill="currentColor" /> Start Fleet
                             </button>
                           )}
                           {isOnline && isRunning && (
                             <button className="btn-card-action stop" onClick={() => stopSingleSimulator(url)} style={{ padding: '4px 12px', fontSize: '11px' }}>
-                              <Square size={9} fill="currentColor" /> Stop Account
+                              <Square size={9} fill="currentColor" /> Stop Fleet
                             </button>
                           )}
+                          <button
+                            className="btn-card-action stop"
+                            title={`Remove account ${accountName}`}
+                            onClick={() => handleDeleteAccount(accountName)}
+                            style={{ padding: '4px 10px', fontSize: '11px', color: 'var(--accent-red)' }}
+                          >
+                            <Trash2 size={10} /> Remove
+                          </button>
                           {!isOnline && (
                             <button className="btn-card-action disabled" disabled style={{ padding: '4px 12px', fontSize: '11px' }}>
                               Offline
@@ -1223,14 +1271,14 @@ export default function App() {
                   >
                     All Accounts
                   </button>
-                  {instances.map((_, i) => (
+                  {displayedAccounts.map((acc, i) => (
                     <button
-                      key={i}
+                      key={acc.id}
                       className={`filter-tab-pill ${selectedAccount === String(i) ? 'active' : ''}`}
                       onClick={() => setSelectedAccount(String(i))}
                       style={{ padding: '3px 10px', fontSize: '11px' }}
                     >
-                      #{i + 1}
+                      #{i + 1} {acc.name}
                     </button>
                   ))}
                 </div>
@@ -1251,22 +1299,19 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody>
-                    {instances.map((url, idx) => {
+                    {displayedAccounts.map((acc, idx) => {
                       if (selectedAccount !== 'all' && selectedAccount !== String(idx)) {
                         return null;
                       }
-                      const s = statuses[url];
-                      const profile = s?.profiles?.[0];
-                      const accountName = profile?.name || s?.instanceName?.split(' · ')[1] || `Account ${idx + 1}`;
-                      const clients = s?.clients || [];
-                      const acctTicks = clients.reduce((acc, c) => acc + (c.ticks || 0), 0);
-                      const realToday = profile?.currentTodayUsd ?? s?.realEarnings?.todayUsd ?? 0;
-                      const realLifetime = profile?.currentLifetimeUsd ?? s?.realEarnings?.lifetimeUsd ?? 0;
+                      const { url, name: accountName, profile, clients } = acc;
+                      const acctTicks = clients.reduce((accTicks, c) => accTicks + (c.ticks || 0), 0);
+                      const realToday = profile?.currentTodayUsd ?? 0;
+                      const realLifetime = profile?.currentLifetimeUsd ?? 0;
                       const topAd = clients[0]?.adTitle || 'Rotating / Pending';
                       const isBlocked = profile?.blocked === true;
 
                       return (
-                        <tr key={url}>
+                        <tr key={acc.id}>
                           <td>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                               <span className="chip purple" style={{ fontSize: '10px', padding: '2px 6px' }}>#{idx + 1}</span>

@@ -52,24 +52,26 @@ for i in $(seq 1 $TOTAL_INSTANCES); do
   account_idx=$((i - 1))
   account_name=$(node -e "try { const fs=require('fs'); const c=JSON.parse(fs.readFileSync('./backend/config.json')); console.log(c[$account_idx]?.name || 'account_$i'); } catch(e) { console.log('account_$i'); }")
 
-  PORT=$port \
-  INSTANCE_NAME="inst_${i} · ${account_name}" \
-  ACCOUNT_INDEX=$account_idx \
-  DEDICATED_ACCOUNT=true \
-  CLIENTS_PER_INSTANCE=$CLIENTS_PER_INSTANCE \
-  TOTAL_INSTANCES=$TOTAL_INSTANCES \
-  nohup node "$DIR/backend/server.js" > "$DIR/logs/backend_$i.log" 2>&1 &
-  BACKEND_PID=$!
-  disown $BACKEND_PID 2>/dev/null || true
-  
-  echo "   -> [Backend $i] Dedicated to '$account_name' ($CLIENTS_PER_INSTANCE clients) on http://localhost:$port (PID: $BACKEND_PID)"
+  (
+    PORT=$port \
+    INSTANCE_NAME="inst_${i} · ${account_name}" \
+    ACCOUNT_INDEX=$account_idx \
+    DEDICATED_ACCOUNT=true \
+    CLIENTS_PER_INSTANCE=$CLIENTS_PER_INSTANCE \
+    TOTAL_INSTANCES=$TOTAL_INSTANCES \
+    nohup node "$DIR/backend/server.js" </dev/null >> "$DIR/logs/backend_$i.log" 2>&1 &
+  )
+  echo "   -> [Backend $i] Dedicated to '$account_name' ($CLIENTS_PER_INSTANCE clients) on http://localhost:$port"
 done
 
 echo "3. Starting React Frontend Dashboard..."
-nohup npm run dev --prefix "$DIR/frontend" -- --port 5174 > "$DIR/logs/frontend.log" 2>&1 &
-FRONTEND_PID=$!
-disown $FRONTEND_PID 2>/dev/null || true
-echo "   -> [Frontend] Dashboard started on http://localhost:5174 (PID: $FRONTEND_PID)"
+(
+  cd "$DIR/frontend" && \
+  nohup ./node_modules/.bin/vite --port 5174 --host 0.0.0.0 </dev/null >> "$DIR/logs/frontend.log" 2>&1 &
+)
+echo "   -> [Frontend] Dashboard starting on http://localhost:5174"
+
+sleep 2
 
 echo ""
 echo "========================================================"

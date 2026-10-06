@@ -1493,3 +1493,131 @@ button:disabled {
     font-size: 32px;
   }
 }
+
+/* ==========================================================================
+   Account Management & Connect Modal
+   ========================================================================== */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background-color: rgba(15, 23, 42, 0.65);
+  backdrop-filter: blur(4px);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  animation: fadeIn 0.15s ease-out;
+}
+
+.modal-dialog {
+  background-color: var(--canvas);
+  border: 1px solid var(--hairline);
+  border-radius: var(--rounded-lg);
+  box-shadow: var(--shadow-modal);
+  width: 100%;
+  max-width: 520px;
+  overflow: hidden;
+}
+
+.modal-header {
+  padding: 18px 24px;
+  border-bottom: 1px solid var(--hairline);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background-color: var(--canvas);
+}
+
+.modal-header h2 {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--ink);
+  margin: 0;
+}
+
+.modal-header p {
+  font-size: 13px;
+  color: var(--steel);
+  margin: 2px 0 0 0;
+}
+
+.modal-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--hairline);
+  background-color: var(--surface-soft);
+  padding: 6px 16px;
+  gap: 8px;
+}
+
+.modal-tab-btn {
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  border: none;
+  background: transparent;
+  color: var(--steel);
+  cursor: pointer;
+  border-radius: var(--rounded-sm);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.15s ease;
+}
+
+.modal-tab-btn:hover {
+  color: var(--ink);
+}
+
+.modal-tab-btn.active {
+  background-color: var(--canvas);
+  color: var(--accent-purple);
+  box-shadow: var(--shadow-sm);
+}
+
+.modal-body {
+  padding: 24px;
+}
+
+.google-auth-box {
+  border: 2px dashed rgba(124, 58, 237, 0.25);
+  border-radius: var(--rounded-md);
+  padding: 28px 20px;
+  text-align: center;
+  background: linear-gradient(180deg, rgba(124, 58, 237, 0.03) 0%, rgba(124, 58, 237, 0.08) 100%);
+}
+
+.auth-pulse-ring {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background-color: rgba(124, 58, 237, 0.12);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto 16px auto;
+  color: var(--accent-purple);
+  position: relative;
+}
+
+.account-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.account-table th {
+  text-align: left;
+  padding: 10px 14px;
+  color: var(--steel);
+  font-weight: 600;
+  border-bottom: 1px solid var(--hairline);
+  background-color: var(--surface-soft);
+}
+
+.account-table td {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--hairline);
+  color: var(--ink);
+}

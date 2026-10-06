@@ -4,6 +4,8 @@
   "description": "Monorepo for Kickbacks Simulator: Node.js backend API & React frontend dashboard",
   "private": true,
   "scripts": {
+    "setup": "npm install --prefix backend && npm install --prefix frontend",
+    "postinstall": "npm install --prefix backend && npm install --prefix frontend",
     "start": "bash ./start.sh",
     "stop": "bash ./stop.sh",
     "backend": "cd backend && npm start",

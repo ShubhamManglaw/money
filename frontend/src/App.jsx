@@ -3,7 +3,8 @@ import {
   Activity, ShieldAlert, Cpu, CircleDollarSign, Terminal,
   Settings, LineChart as LineChartIcon, RefreshCw, LogOut, Plus, Trash2,
   Play, Square, AlertCircle, Ban, Server, Compass, Sparkles,
-  TrendingUp, Zap, Target, ShieldCheck, Gauge, BarChart3, Clock, DollarSign
+  TrendingUp, Zap, Target, ShieldCheck, Gauge, BarChart3, Clock, DollarSign,
+  UserPlus, ExternalLink, CheckCircle2, X, Key, Globe
 } from 'lucide-react';
 
 const MuiLineChart = lazy(() =>
@@ -11,7 +12,7 @@ const MuiLineChart = lazy(() =>
 );
 
 const DEFAULT_INSTANCES = [
-  typeof window !== 'undefined' && window.location.hostname === 'localhost'
+  typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
     ? 'http://localhost:3001'
     : 'https://kickbacks-backend-slf4.onrender.com'
 ];
@@ -60,6 +61,20 @@ export default function App() {
   const [loading, setLoading] = useState(() => Boolean(localStorage.getItem('dashboard_password')));
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [selectedAccount, setSelectedAccount] = useState('all');
+
+  // Account Connect Modal & Auth States
+  const [showConnectModal, setShowConnectModal] = useState(false);
+  const [connectTab, setConnectTab] = useState('google');
+  const [authSession, setAuthSession] = useState(null);
+  const [authStatus, setAuthStatus] = useState('idle');
+  const [authErrorMsg, setAuthErrorMsg] = useState('');
+
+  const [manualAccountName, setManualAccountName] = useState('');
+  const [manualRefreshToken, setManualRefreshToken] = useState('');
+  const [manualScale, setManualScale] = useState(10);
+  const [manualSaving, setManualSaving] = useState(false);
+  const [manualErrorMsg, setManualErrorMsg] = useState('');
+  const [manualSuccessMsg, setManualSuccessMsg] = useState('');
 
   const getCachedMetrics = useCallback(() => {
     const saved = localStorage.getItem('kickbacks_cached_metrics');
@@ -379,6 +394,129 @@ export default function App() {
     }
   };
 
+  // Google OAuth Start Login Flow
+  const handleStartGoogleLogin = async () => {
+    setAuthStatus('starting');
+    setAuthErrorMsg('');
+    try {
+      const activeUrl = instances.find(u => statuses[u]?.online) || instances[0] || 'http://localhost:3001';
+      const res = await fetch(`${activeUrl}/api/auth/start-login`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${password}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to start login session');
+      }
+
+      setAuthSession(data);
+      setAuthStatus('polling');
+      
+      // Attempt to open the Google login window
+      window.open(data.loginUrl, '_blank');
+    } catch (err) {
+      setAuthStatus('error');
+      setAuthErrorMsg(err.message);
+    }
+  };
+
+  // Google OAuth Poll Effect
+  useEffect(() => {
+    if (authStatus !== 'polling' || !authSession?.sessionId) return;
+
+    const activeUrl = instances.find(u => statuses[u]?.online) || instances[0] || 'http://localhost:3001';
+    let isCancelled = false;
+
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`${activeUrl}/api/auth/poll-login/${authSession.sessionId}`, {
+          headers: {
+            'Authorization': `Bearer ${password}`
+          }
+        });
+        const data = await res.json();
+        if (isCancelled) return;
+
+        if (data.status === 'success') {
+          clearInterval(interval);
+          setAuthStatus('success');
+          setRefreshTrigger(prev => prev + 1);
+        } else if (data.status === 'error') {
+          clearInterval(interval);
+          setAuthStatus('error');
+          setAuthErrorMsg(data.error || 'Login authorization failed.');
+        }
+      } catch (err) {
+        // Continue polling until response received
+      }
+    }, 2500);
+
+    return () => {
+      isCancelled = true;
+      clearInterval(interval);
+    };
+  }, [authStatus, authSession, instances, statuses, password]);
+
+  // Manual Refresh Token Addition
+  const handleManualAddAccount = async (e) => {
+    e.preventDefault();
+    setManualSaving(true);
+    setManualErrorMsg('');
+    setManualSuccessMsg('');
+    try {
+      const activeUrl = instances.find(u => statuses[u]?.online) || instances[0] || 'http://localhost:3001';
+      const res = await fetch(`${activeUrl}/api/auth/add-account`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${password}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          name: manualAccountName.trim(),
+          refreshToken: manualRefreshToken.trim(),
+          scale: parseInt(manualScale, 10) || 10
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to add account');
+      }
+
+      setManualSuccessMsg(`Account '${data.account.name}' added successfully! Simulator fleet restarted.`);
+      setManualRefreshToken('');
+      setManualAccountName('');
+      setRefreshTrigger(prev => prev + 1);
+    } catch (err) {
+      setManualErrorMsg(err.message);
+    } finally {
+      setManualSaving(false);
+    }
+  };
+
+  // Delete Account
+  const handleDeleteAccount = async (accountName) => {
+    if (!window.confirm(`Are you sure you want to remove account '${accountName}'?`)) return;
+    try {
+      const activeUrl = instances.find(u => statuses[u]?.online) || instances[0] || 'http://localhost:3001';
+      const res = await fetch(`${activeUrl}/api/auth/account/${encodeURIComponent(accountName)}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${password}`
+        }
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to delete account');
+      }
+      setRefreshTrigger(prev => prev + 1);
+    } catch (err) {
+      alert(`Error deleting account: ${err.message}`);
+    }
+  };
+
   const saveConfiguration = async (e) => {
     e.preventDefault();
     setConfigSaving(true);
@@ -672,6 +810,9 @@ export default function App() {
           <button type="submit" className="btn-primary-pill" style={{ width: '100%', justifyContent: 'center' }} disabled={authChecking}>
             {authChecking ? 'Verifying Credentials...' : 'Access Atlas Fleet'}
           </button>
+          <p style={{ fontSize: '11px', color: 'var(--steel)', marginTop: '12px', textAlign: 'center' }}>
+            Local default password: <code style={{ color: 'var(--accent-purple)' }}>Ankitsin</code>
+          </p>
           {authError && <div className="auth-error">{authError}</div>}
         </form>
       </div>
@@ -732,6 +873,22 @@ export default function App() {
                 </button>
               </div>
             )}
+
+            <button
+              className="btn-primary-pill"
+              style={{ padding: '6px 14px', fontSize: '12px' }}
+              onClick={() => {
+                setAuthStatus('idle');
+                setAuthErrorMsg('');
+                setManualErrorMsg('');
+                setManualSuccessMsg('');
+                setShowConnectModal(true);
+              }}
+              title="Add or login Kickbacks account"
+            >
+              <UserPlus size={13} />
+              <span>+ Connect Account</span>
+            </button>
 
             <button
               className="btn-icon-pill"
@@ -843,6 +1000,20 @@ export default function App() {
                   </button>
                 );
               })}
+              <button
+                className="filter-tab-pill"
+                style={{ color: 'var(--accent-purple)', borderColor: 'rgba(124, 58, 237, 0.3)', background: 'rgba(124, 58, 237, 0.05)', fontWeight: 600 }}
+                onClick={() => {
+                  setAuthStatus('idle');
+                  setAuthErrorMsg('');
+                  setManualErrorMsg('');
+                  setManualSuccessMsg('');
+                  setShowConnectModal(true);
+                }}
+              >
+                <UserPlus size={12} />
+                <span>+ Connect Kickbacks Account</span>
+              </button>
             </div>
 
             {/* Divided Account Panels with their respective clients */}
@@ -1311,6 +1482,78 @@ export default function App() {
             </div>
 
             <div className="panel config-editor-panel">
+              <div className="panel-header compact" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div>
+                  <p className="panel-kicker">Accounts & Fleet</p>
+                  <h2>Configured Accounts</h2>
+                </div>
+                <button
+                  type="button"
+                  className="btn-primary-pill"
+                  style={{ padding: '6px 14px', fontSize: '12px' }}
+                  onClick={() => {
+                    setAuthStatus('idle');
+                    setAuthErrorMsg('');
+                    setManualErrorMsg('');
+                    setManualSuccessMsg('');
+                    setShowConnectModal(true);
+                  }}
+                >
+                  <UserPlus size={13} />
+                  <span>+ Connect Account</span>
+                </button>
+              </div>
+              <p className="panel-description">
+                Active Kickbacks accounts running in the simulation fleet. Each account runs with parallel virtual clients.
+              </p>
+
+              <div style={{ overflowX: 'auto', marginBottom: '24px' }}>
+                <table className="account-table">
+                  <thead>
+                    <tr>
+                      <th>Account Name</th>
+                      <th>Client ID</th>
+                      <th>Scale</th>
+                      <th>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(() => {
+                      try {
+                        const parsed = JSON.parse(configJson);
+                        if (Array.isArray(parsed) && parsed.length > 0) {
+                          return parsed.map(acc => (
+                            <tr key={acc.name || acc.clientId}>
+                              <td style={{ fontWeight: 600 }}>{acc.name}</td>
+                              <td style={{ fontFamily: 'var(--font-code)', fontSize: '12px', color: 'var(--steel)' }}>{acc.clientId || 'N/A'}</td>
+                              <td><span className="chip purple" style={{ fontSize: '11px', padding: '2px 8px' }}>{acc.scale || 10} clients</span></td>
+                              <td>
+                                <button
+                                  type="button"
+                                  className="icon-button danger ghost"
+                                  onClick={() => handleDeleteAccount(acc.name)}
+                                  title="Remove account"
+                                  aria-label={`Remove ${acc.name}`}
+                                >
+                                  <Trash2 size={13} />
+                                </button>
+                              </td>
+                            </tr>
+                          ));
+                        }
+                      } catch (_) {}
+                      return (
+                        <tr>
+                          <td colSpan={4} style={{ textAlign: 'center', padding: '16px', color: 'var(--steel)' }}>
+                            No accounts configured. Click "+ Connect Account" to log in or add one!
+                          </td>
+                        </tr>
+                      );
+                    })()}
+                  </tbody>
+                </table>
+              </div>
+
               <div className="panel-header compact">
                 <div>
                   <p className="panel-kicker">Simulator JSON</p>
@@ -1413,6 +1656,243 @@ export default function App() {
           </div>
         </div>
       </footer>
+
+      {/* Connect Account Modal */}
+      {showConnectModal && (
+        <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) setShowConnectModal(false); }}>
+          <div className="modal-dialog">
+            <div className="modal-header">
+              <div>
+                <h2>Connect Kickbacks Account</h2>
+                <p>Sign in via Google or import an existing refresh token</p>
+              </div>
+              <button
+                className="btn-icon-pill"
+                onClick={() => setShowConnectModal(false)}
+                title="Close modal"
+              >
+                <X size={15} />
+              </button>
+            </div>
+
+            <div className="modal-tabs">
+              <button
+                className={`modal-tab-btn ${connectTab === 'google' ? 'active' : ''}`}
+                onClick={() => setConnectTab('google')}
+              >
+                <Globe size={13} />
+                <span>One-Click Google Login</span>
+              </button>
+              <button
+                className={`modal-tab-btn ${connectTab === 'token' ? 'active' : ''}`}
+                onClick={() => setConnectTab('token')}
+              >
+                <Key size={13} />
+                <span>Manual Refresh Token</span>
+              </button>
+            </div>
+
+            <div className="modal-body">
+              {connectTab === 'google' ? (
+                <div>
+                  {authStatus === 'idle' && (
+                    <div className="google-auth-box">
+                      <div className="auth-pulse-ring">
+                        <Globe size={22} />
+                      </div>
+                      <h3 style={{ fontSize: '16px', fontWeight: 700, margin: '0 0 6px 0', color: 'var(--ink)' }}>
+                        Sign in with Google
+                      </h3>
+                      <p style={{ fontSize: '13px', color: 'var(--steel)', margin: '0 0 20px 0', lineHeight: 1.5 }}>
+                        Click below to authenticate with Kickbacks via Google. Terms of Service and Boosted Mode consent scopes are accepted automatically.
+                      </p>
+                      <button
+                        type="button"
+                        className="btn-primary-pill"
+                        style={{ width: '100%', justifyContent: 'center', padding: '10px 20px' }}
+                        onClick={handleStartGoogleLogin}
+                      >
+                        <Globe size={15} />
+                        <span>Log in via kickbacks.ai</span>
+                      </button>
+                    </div>
+                  )}
+
+                  {authStatus === 'starting' && (
+                    <div style={{ textAlign: 'center', padding: '36px 20px' }}>
+                      <div className="loading-ring" style={{ margin: '0 auto 16px auto' }} />
+                      <p style={{ fontSize: '14px', fontWeight: 600, color: 'var(--ink)' }}>Initiating login session...</p>
+                    </div>
+                  )}
+
+                  {authStatus === 'polling' && (
+                    <div className="google-auth-box">
+                      <div className="auth-pulse-ring">
+                        <RefreshCw size={20} className="spin" />
+                      </div>
+                      <h3 style={{ fontSize: '16px', fontWeight: 700, margin: '0 0 8px 0', color: 'var(--ink)' }}>
+                        Waiting for Google Authorization...
+                      </h3>
+                      <p style={{ fontSize: '13px', color: 'var(--steel)', margin: '0 0 16px 0', lineHeight: 1.5 }}>
+                        Please complete the sign-in in the newly opened browser window. This dialog will update automatically once verified.
+                      </p>
+                      {authSession?.loginUrl && (
+                        <button
+                          type="button"
+                          className="btn-outline-pill"
+                          style={{ width: '100%', justifyContent: 'center', marginBottom: '10px' }}
+                          onClick={() => window.open(authSession.loginUrl, '_blank')}
+                        >
+                          <ExternalLink size={13} />
+                          <span>Re-open Google Sign-In Window</span>
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        className="btn-ghost-pill"
+                        style={{ fontSize: '12px', color: 'var(--steel)' }}
+                        onClick={() => setAuthStatus('idle')}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  )}
+
+                  {authStatus === 'success' && (
+                    <div style={{ textAlign: 'center', padding: '24px 16px' }}>
+                      <div style={{
+                        width: 52, height: 52, borderRadius: '50%', backgroundColor: 'rgba(16, 185, 129, 0.12)',
+                        color: 'var(--accent-green)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        margin: '0 auto 16px auto'
+                      }}>
+                        <CheckCircle2 size={26} />
+                      </div>
+                      <h3 style={{ fontSize: '17px', fontWeight: 700, margin: '0 0 6px 0', color: 'var(--ink)' }}>
+                        Account Connected Successfully!
+                      </h3>
+                      <p style={{ fontSize: '13px', color: 'var(--steel)', margin: '0 0 20px 0' }}>
+                        Consent scopes were auto-accepted. The simulator fleet has restarted and is actively running with your new account.
+                      </p>
+                      <button
+                        type="button"
+                        className="btn-primary-pill"
+                        style={{ width: '100%', justifyContent: 'center' }}
+                        onClick={() => setShowConnectModal(false)}
+                      >
+                        Done & View Dashboard
+                      </button>
+                    </div>
+                  )}
+
+                  {authStatus === 'error' && (
+                    <div style={{ textAlign: 'center', padding: '20px 16px' }}>
+                      <div style={{
+                        width: 48, height: 48, borderRadius: '50%', backgroundColor: 'var(--accent-orange-soft)',
+                        color: 'var(--accent-orange)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        margin: '0 auto 14px auto'
+                      }}>
+                        <AlertCircle size={24} />
+                      </div>
+                      <h3 style={{ fontSize: '16px', fontWeight: 700, margin: '0 0 6px 0', color: 'var(--ink)' }}>
+                        Authentication Failed
+                      </h3>
+                      <p style={{ fontSize: '13px', color: 'var(--steel)', margin: '0 0 18px 0' }}>
+                        {authErrorMsg || 'Unable to complete authorization with Kickbacks.'}
+                      </p>
+                      <div style={{ display: 'flex', gap: '10px' }}>
+                        <button
+                          type="button"
+                          className="btn-primary-pill"
+                          style={{ flex: 1, justifyContent: 'center' }}
+                          onClick={handleStartGoogleLogin}
+                        >
+                          Try Again
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-outline-pill"
+                          onClick={() => setAuthStatus('idle')}
+                        >
+                          Back
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <form onSubmit={handleManualAddAccount}>
+                  <div className="form-group" style={{ marginBottom: '14px' }}>
+                    <label htmlFor="manualAccountName">Account Name (Optional)</label>
+                    <input
+                      id="manualAccountName"
+                      type="text"
+                      className="form-input"
+                      placeholder="e.g. account_main"
+                      value={manualAccountName}
+                      onChange={e => setManualAccountName(e.target.value)}
+                    />
+                  </div>
+
+                  <div className="form-group" style={{ marginBottom: '14px' }}>
+                    <label htmlFor="manualRefreshToken">Refresh Token</label>
+                    <input
+                      id="manualRefreshToken"
+                      type="password"
+                      className="form-input"
+                      placeholder="Paste your refreshToken here"
+                      value={manualRefreshToken}
+                      onChange={e => setManualRefreshToken(e.target.value)}
+                      required
+                    />
+                  </div>
+
+                  <div className="form-group" style={{ marginBottom: '20px' }}>
+                    <label htmlFor="manualScale">Virtual Clients Scale</label>
+                    <input
+                      id="manualScale"
+                      type="number"
+                      min="1"
+                      max="50"
+                      className="form-input"
+                      value={manualScale}
+                      onChange={e => setManualScale(e.target.value)}
+                      required
+                    />
+                    <span style={{ fontSize: '11px', color: 'var(--steel)', marginTop: '4px', display: 'block' }}>
+                      Number of simulated concurrent clients for this account (recommended: 5–10).
+                    </span>
+                  </div>
+
+                  {manualErrorMsg && (
+                    <div className="auth-error" style={{ marginBottom: '16px' }}>{manualErrorMsg}</div>
+                  )}
+
+                  {manualSuccessMsg && (
+                    <div style={{
+                      padding: '10px 14px', backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                      color: 'var(--accent-green)', borderRadius: 'var(--rounded-md)',
+                      fontSize: '13px', fontWeight: 600, marginBottom: '16px',
+                      border: '1px solid rgba(16, 185, 129, 0.25)'
+                    }}>
+                      {manualSuccessMsg}
+                    </div>
+                  )}
+
+                  <button
+                    type="submit"
+                    className="btn-primary-pill"
+                    style={{ width: '100%', justifyContent: 'center' }}
+                    disabled={manualSaving}
+                  >
+                    <Key size={14} />
+                    <span>{manualSaving ? 'Verifying & Saving...' : 'Save & Start Simulating'}</span>
+                  </button>
+                </form>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

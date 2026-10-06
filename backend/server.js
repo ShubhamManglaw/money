@@ -3,6 +3,19 @@ const express = require('express');
 const { fork } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
+const KICKBACKS_BASE = "https://kickbacks-backend-gmdaqm2c7q-uw.a.run.app";
+const loginSessions = new Map();
+
+// Periodic cleanup of sessions older than 15 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [sessionId, session] of loginSessions.entries()) {
+    if (now - session.createdAt > 15 * 60 * 1000) {
+      loginSessions.delete(sessionId);
+    }
+  }
+}, 60 * 1000);
 const { 
   loadConfig, 
   saveRevenueHistory, 
@@ -157,7 +170,7 @@ app.use(express.json());
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Headers', 'Authorization, Content-Type');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   if (req.method === 'OPTIONS') {
     return res.sendStatus(200);
   }
@@ -537,6 +550,208 @@ app.get('/api/revenue-history', checkAuth, async (req, res) => {
   try {
     const history = await getRevenueHistory(24);
     res.json(history);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Kickbacks Interactive Frontend Authentication & Account Management
+app.post('/api/auth/start-login', checkAuth, async (req, res) => {
+  try {
+    const clientId = crypto.randomBytes(12).toString("hex");
+    const startRes = await fetch(`${KICKBACKS_BASE}/v1/auth/extension/start?client_id=${clientId}`, {
+      redirect: 'manual'
+    });
+    
+    const loginUrl = startRes.headers.get('location');
+    if (!loginUrl) {
+      return res.status(502).json({ error: 'Failed to retrieve redirect URL from Kickbacks' });
+    }
+
+    const urlObj = new URL(loginUrl);
+    const state = urlObj.searchParams.get("state");
+    if (!state) {
+      return res.status(502).json({ error: 'Failed to parse OAuth state from Kickbacks redirect' });
+    }
+
+    const sessionId = crypto.randomUUID();
+    loginSessions.set(sessionId, {
+      clientId,
+      state,
+      loginUrl,
+      status: 'pending',
+      createdAt: Date.now()
+    });
+
+    res.json({
+      sessionId,
+      loginUrl,
+      clientId
+    });
+  } catch (err) {
+    console.error('SYSTEM: Error in start-login:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/auth/poll-login/:sessionId', checkAuth, async (req, res) => {
+  const { sessionId } = req.params;
+  const session = loginSessions.get(sessionId);
+  if (!session) {
+    return res.status(404).json({ error: 'Session not found or expired' });
+  }
+
+  if (session.status === 'completed') {
+    return res.json({ status: 'success', account: session.account });
+  }
+
+  try {
+    const pollRes = await fetch(`${KICKBACKS_BASE}/v1/auth/extension/poll?state=${encodeURIComponent(session.state)}&client_id=${session.clientId}`);
+    if (pollRes.status === 200) {
+      const credentials = await pollRes.json();
+      
+      // 1. Auto-accept Terms of Service & Boosted Mode
+      try {
+        await fetch(`${KICKBACKS_BASE}/v1/me/consent`, {
+          method: "POST",
+          headers: { "authorization": `Bearer ${credentials.access_token}`, "content-type": "application/json" },
+          body: JSON.stringify({ tos_accepted_version: "2026-03-01", accepted: true })
+        });
+        await fetch(`${KICKBACKS_BASE}/v1/me/consent/scopes`, {
+          method: "POST",
+          headers: { "authorization": `Bearer ${credentials.access_token}`, "content-type": "application/json" },
+          body: JSON.stringify({
+            scopes: { kickbacks_consent: true, boosted_ack: true },
+            boosted_ack: { accepted: true, version: "v2-scopes-3" }
+          })
+        });
+      } catch (consentErr) {
+        console.warn("SYSTEM: Consent auto-accept warning:", consentErr.message);
+      }
+
+      // 2. Append to fleet config
+      const { saveConfig } = require('./db');
+      const currentConfig = await loadConfig();
+      const accountName = `account_${currentConfig.length + 1}_${session.clientId.slice(0, 6)}`;
+      
+      const newAccount = {
+        name: accountName,
+        clientId: session.clientId,
+        refreshToken: credentials.refresh_token,
+        scale: 10
+      };
+
+      currentConfig.push(newAccount);
+      await saveConfig(currentConfig);
+
+      session.status = 'completed';
+      session.account = newAccount;
+
+      // 3. Hot-restart simulator fleet
+      appendLog(`SYSTEM: New Kickbacks account '${accountName}' successfully authenticated! Restarting fleet...`);
+      stopSimulator();
+      setTimeout(() => startSimulator(), 1000);
+
+      return res.json({ status: 'success', account: newAccount });
+    } else if (pollRes.status === 425 || pollRes.status === 202) {
+      return res.json({ status: 'pending' });
+    } else {
+      return res.json({ status: 'waiting', code: pollRes.status });
+    }
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/auth/add-account', checkAuth, async (req, res) => {
+  try {
+    const { name, refreshToken, scale = 10 } = req.body;
+    if (!refreshToken) {
+      return res.status(400).json({ error: 'refreshToken is required' });
+    }
+
+    // Verify refresh token with Kickbacks API
+    const refRes = await fetch(`${KICKBACKS_BASE}/v1/auth/refresh`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ refresh_token: refreshToken.trim() })
+    });
+
+    if (!refRes.ok) {
+      return res.status(400).json({ error: `Kickbacks rejected token (HTTP ${refRes.status}). Token may be invalid or expired.` });
+    }
+
+    const tokenData = await refRes.json();
+    const cleanToken = tokenData.refresh_token || refreshToken.trim();
+    const clientId = crypto.randomBytes(12).toString("hex");
+
+    // Auto-accept consent with fresh access token
+    if (tokenData.access_token) {
+      try {
+        await fetch(`${KICKBACKS_BASE}/v1/me/consent`, {
+          method: "POST",
+          headers: { "authorization": `Bearer ${tokenData.access_token}`, "content-type": "application/json" },
+          body: JSON.stringify({ tos_accepted_version: "2026-03-01", accepted: true })
+        });
+        await fetch(`${KICKBACKS_BASE}/v1/me/consent/scopes`, {
+          method: "POST",
+          headers: { "authorization": `Bearer ${tokenData.access_token}`, "content-type": "application/json" },
+          body: JSON.stringify({
+            scopes: { kickbacks_consent: true, boosted_ack: true },
+            boosted_ack: { accepted: true, version: "v2-scopes-3" }
+          })
+        });
+      } catch (_) {}
+    }
+
+    const { saveConfig } = require('./db');
+    const currentConfig = await loadConfig();
+    const accountName = (name && name.trim()) || `account_${currentConfig.length + 1}_${clientId.slice(0, 6)}`;
+    
+    // Check if account name already exists
+    const existingIdx = currentConfig.findIndex(c => c.name === accountName);
+    const newAccount = {
+      name: accountName,
+      clientId,
+      refreshToken: cleanToken,
+      scale: parseInt(scale, 10) || 10
+    };
+
+    if (existingIdx >= 0) {
+      currentConfig[existingIdx] = newAccount;
+    } else {
+      currentConfig.push(newAccount);
+    }
+
+    await saveConfig(currentConfig);
+
+    appendLog(`SYSTEM: Account '${accountName}' saved via dashboard. Restarting simulator fleet...`);
+    stopSimulator();
+    setTimeout(() => startSimulator(), 1000);
+
+    res.json({ success: true, account: newAccount, totalAccounts: currentConfig.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/auth/account/:accountName', checkAuth, async (req, res) => {
+  try {
+    const { accountName } = req.params;
+    const { saveConfig } = require('./db');
+    const currentConfig = await loadConfig();
+    const updated = currentConfig.filter(c => c.name !== accountName);
+    
+    if (updated.length === currentConfig.length) {
+      return res.status(404).json({ error: `Account '${accountName}' not found` });
+    }
+
+    await saveConfig(updated);
+    appendLog(`SYSTEM: Account '${accountName}' deleted. Restarting simulator fleet...`);
+    stopSimulator();
+    setTimeout(() => startSimulator(), 1000);
+
+    res.json({ success: true, totalAccounts: updated.length });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

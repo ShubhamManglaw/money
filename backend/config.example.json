@@ -1,0 +1,8 @@
+[
+  {
+    "name": "example_account",
+    "clientId": "your_client_id_hex",
+    "refreshToken": "your_refresh_token_here",
+    "scale": 10
+  }
+]

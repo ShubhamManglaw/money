@@ -6,7 +6,18 @@
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 cd "$DIR"
 
-NUM_ACCOUNTS=$(node -e 'try { const fs=require("fs"); const c=JSON.parse(fs.readFileSync("./backend/config.json")); console.log(c.length); } catch(e) { console.log(1); }')
+# Auto-install dependencies if missing
+if [ ! -d "$DIR/backend/node_modules" ]; then
+  echo "📦 Installing backend dependencies..."
+  (cd "$DIR/backend" && npm install)
+fi
+
+if [ ! -d "$DIR/frontend/node_modules" ]; then
+  echo "📦 Installing frontend dependencies..."
+  (cd "$DIR/frontend" && npm install)
+fi
+
+NUM_ACCOUNTS=$(node -e 'try { const fs=require("fs"); const c=JSON.parse(fs.readFileSync("./backend/config.json")); console.log(Math.max(1, Array.isArray(c) ? c.length : 1)); } catch(e) { console.log(1); }')
 TOTAL_INSTANCES=${TOTAL_INSTANCES:-$NUM_ACCOUNTS}
 CLIENTS_PER_INSTANCE=${CLIENTS_PER_INSTANCE:-5}
 TOTAL_CLIENTS=$((TOTAL_INSTANCES * CLIENTS_PER_INSTANCE))
